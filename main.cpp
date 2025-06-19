@@ -181,8 +181,7 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
     }
 }
 
-int main() {
-    ProcessManager manager;
+void scheduler_start(ProcessManager& manager){
 
     // Automatically create 10 processes and queue them for printing
     for (int i = 1; i <= 10; ++i) {
@@ -193,7 +192,15 @@ int main() {
             lock_guard<mutex> lock(queueMutex);
             fcfsQueue.push(proc);
         }
+        this_thread::sleep_for(chrono::seconds(1));
     }
+}
+
+int main() {
+    ProcessManager manager;
+    
+    thread scheduler_start_thread(scheduler_start, ref(manager));
+    
     cv.notify_all();
 
     printHeader();
@@ -250,6 +257,7 @@ int main() {
     stopScheduler = true;
     cv.notify_all();
     for (auto& t : cpuThreads) t.join();
+    scheduler_start_thread.join();
 
     return 0;
 }

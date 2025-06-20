@@ -184,7 +184,7 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
 void scheduler_start(ProcessManager& manager){
     // Automatically create 10 processes and queue them for printing
     for (int i = 1; i <= 10; ++i) {
-        this_thread::sleep_for(chrono::seconds(3)); // sleep before creating a process
+        this_thread::sleep_for(chrono::seconds(3)); // sleep before creating a process == CPU TICK
 
         string procName = "process" + (i < 10 ? "0" + to_string(i) : to_string(i));
         manager.createProcess(procName);
@@ -200,10 +200,8 @@ void scheduler_start(ProcessManager& manager){
 
 int main() {
     ProcessManager manager;
-    
-    thread scheduler_start_thread(scheduler_start, ref(manager));
-    
-    cv.notify_all();
+    thread scheduler_start_thread;
+    bool schedulerRunning = false;
 
     printHeader();
 
@@ -224,10 +222,26 @@ int main() {
             handleScreenCommand(command, manager);
         }
         else if (command == "scheduler-start") {
-            cout << "scheduler-start command recognized. Doing something." << endl;
+            if (!schedulerRunning) {
+                schedulerRunning = true;
+                scheduler_start_thread = thread(scheduler_start, ref(manager));
+            }
+            else {
+                cout << "Scheduler is already running!" << endl;
+            }
         }
         else if (command == "scheduler-stop") {
             cout << "scheduler-stop command recognized. Doing something." << endl;
+            if (schedulerRunning){
+                stopScheduler = true;
+                schedulerRunning = false;
+                cv.notify_all();
+                scheduler_start_thread.join();
+                stopScheduler = false;
+            }
+            else {
+                cout << "Scheduler is not running." << endl;
+            }
         }
         else if (command == "clear") {
             clearScreen();
@@ -255,11 +269,10 @@ int main() {
             cout << "Unknown command." << endl;
         }
     }
-
     stopScheduler = true;
     cv.notify_all();
     for (auto& t : cpuThreads) t.join();
-    scheduler_start_thread.join();
+    
 
     return 0;
 }

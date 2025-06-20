@@ -136,12 +136,6 @@ void cpuWorker(int coreId) {
             proc->coreAssigned = coreId;
             for (int i = 0; i < proc->totalLine; ++i) {
                 proc->currentLine++;
-                string timestamp = generateTimestamp();
-                string logEntry = "(" + timestamp + ") Core:" + to_string(coreId) +
-                    " \"Hello world from " + proc->name + "!\"\n";
-                ofstream logFile(proc->name + ".txt", ios::app);
-                logFile << logEntry;
-                logFile.close();
                 this_thread::sleep_for(chrono::milliseconds(40));
             }
             proc->isFinished = true;

@@ -1,0 +1,7 @@
+num-cpu 4
+scheduler fcfs
+quantum-cycles 5
+batch-process-freq 3
+min-ins 10
+max-ins 100
+delay-per-exec 50

@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <string>
 #include <sstream>
 #include <unordered_map>
@@ -12,8 +12,89 @@
 #include <condition_variable>
 #include <vector>
 #include <chrono>
+#include <random>
 
 using namespace std;
+
+struct SystemConfig {
+    int numCPU = -1;                     // Sentinel: -1 means "not set"
+    string scheduler = "";               // Empty string = "not set"
+    uint32_t quantumCycles = 0;          // 0 = "not set"
+    uint32_t batchProcessFreq = 0;
+    uint32_t minInstructions = 0;
+    uint32_t maxInstructions = 0;
+    uint32_t delayPerExec = 0;
+};
+
+// Declare the global instance
+SystemConfig GLOBAL_CONFIG;
+
+bool loadSystemConfig(const string& filename = "config.txt") {
+    ifstream file(filename);
+    if (!file.is_open()) {
+        cerr << "Error: Could not open config.txt" << endl;
+        return false;
+    }
+
+    string key;
+    while (file >> key) {
+        if (key == "num-cpu") {
+            int value;
+            file >> value;
+            if (value < 1 || value > 128) {
+                cerr << "Invalid num-cpu value. Must be 1–128." << endl;
+                return false;
+            }
+            GLOBAL_CONFIG.numCPU = value;
+        }
+        else if (key == "scheduler") {
+            string value;
+            file >> value;
+            if (value != "fcfs" && value != "rr") {
+                cerr << "Invalid scheduler. Must be 'fcfs' or 'rr'." << endl;
+                return false;
+            }
+            GLOBAL_CONFIG.scheduler = value;
+        }
+        else if (key == "quantum-cycles") {
+            uint32_t value;
+            file >> value;
+            GLOBAL_CONFIG.quantumCycles = value;
+        }
+        else if (key == "batch-process-freq") {
+            uint32_t value;
+            file >> value;
+            GLOBAL_CONFIG.batchProcessFreq = value;
+        }
+        else if (key == "min-ins") {
+            uint32_t value;
+            file >> value;
+            GLOBAL_CONFIG.minInstructions = value;
+        }
+        else if (key == "max-ins") {
+            uint32_t value;
+            file >> value;
+            GLOBAL_CONFIG.maxInstructions = value;
+        }
+        else if (key == "delay-per-exec") {
+            uint32_t value;
+            file >> value;
+            GLOBAL_CONFIG.delayPerExec = value;
+        }
+        else {
+            cerr << "Unknown config key: " << key << endl;
+            return false;
+        }
+    }
+
+    // Final validation
+    if (GLOBAL_CONFIG.minInstructions > GLOBAL_CONFIG.maxInstructions) {
+        cerr << "min-ins cannot be greater than max-ins." << endl;
+        return false;
+    }
+
+    return true;
+}
 
 void printHeader() {
     cout << " _____  _____   ____  _____  ______  _______     __" << endl;
@@ -36,10 +117,22 @@ void clearScreen() {
 string generateTimestamp() {
     auto now = time(nullptr);
     tm localTime;
-    localtime_r(&now, &localTime);
+    localtime_s(&localTime , &now);
     stringstream ss;
     ss << put_time(&localTime, "%m/%d/%Y %I:%M:%S%p");
     return ss.str();
+}
+
+int cpuBurstGenerator() {//if func will be use in scheduler start, then change void to int and return cpuBurst
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(GLOBAL_CONFIG.minInstructions, GLOBAL_CONFIG.maxInstructions);
+
+    int cpuBurst = distrib(gen);
+
+    //cout << "Generated CPU Burst: " << cpuBurst << endl;
+
+    return cpuBurst;
 }
 
 struct Process {
@@ -87,7 +180,7 @@ public:
             cout << "Process " << name << " already exists." << endl;
             return;
         }
-        processes[name] = make_unique<Process>(Process{ name, 0, 100, generateTimestamp() });
+        processes[name] = make_unique<Process>(Process{ name, 0, cpuBurstGenerator(), generateTimestamp()});
     }
 
     Process* retrieveProcess(const string& name) {
@@ -136,12 +229,6 @@ void cpuWorker(int coreId) {
             proc->coreAssigned = coreId;
             for (int i = 0; i < proc->totalLine; ++i) {
                 proc->currentLine++;
-                string timestamp = generateTimestamp();
-                string logEntry = "(" + timestamp + ") Core:" + to_string(coreId) +
-                    " \"Hello world from " + proc->name + "!\"\n";
-                ofstream logFile(proc->name + ".txt", ios::app);
-                logFile << logEntry;
-                logFile.close();
                 this_thread::sleep_for(chrono::milliseconds(40));
             }
             proc->isFinished = true;
@@ -162,9 +249,12 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
         manager.createProcess(processName);
         Process* proc = manager.retrieveProcess(processName);
         if (proc) {
+            lock_guard<mutex> lock(queueMutex);
+            fcfsQueue.push(proc);
             displayProcess(*proc);
             printHeader();
         }
+        cv.notify_one();
     }
     else if (option == "-r" && !processName.empty()) {
         Process* proc = manager.retrieveProcess(processName);
@@ -181,44 +271,117 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
     }
 }
 
-int main() {
-    ProcessManager manager;
+void scheduler_start(ProcessManager& manager) {
+    // Automatically create N processes and queue them for running
+    int processCountName = 1;
+    while (!stopScheduler) {
+        // Interruptible sleep/frequency
+        for (int frequency = 0; frequency < 10 && !stopScheduler; ++frequency) {
+            this_thread::sleep_for(chrono::milliseconds(100));
+        }
+        if (stopScheduler) break;
 
-    // Automatically create 10 processes and queue them for printing
-    for (int i = 1; i <= 10; ++i) {
-        string procName = "process" + (i < 10 ? "0" + to_string(i) : to_string(i));
-        manager.createProcess(procName);
-        Process* proc = manager.retrieveProcess(procName);
-        if (proc) {
-            lock_guard<mutex> lock(queueMutex);
-            fcfsQueue.push(proc);
+        while (!stopScheduler) {
+            string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
+
+            // checks if process already exists
+            if (manager.retrieveProcess(procName) == nullptr) {
+                // creates dummy process 
+                manager.createProcess(procName);
+                // adds the created process to the queue
+                Process* proc = manager.retrieveProcess(procName);
+                if (proc) {
+                    lock_guard<mutex> lock(queueMutex);
+                    fcfsQueue.push(proc);
+                }
+                cv.notify_one();
+                ++processCountName;
+                break;
+            }
+            else {
+                ++processCountName;
+            }
         }
     }
-    cv.notify_all();
+}
+
+
+int main() {
+    ProcessManager manager;
+    thread scheduler_start_thread;
+    bool schedulerRunning = false;
 
     printHeader();
 
     vector<thread> cpuThreads;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 4; ++i) {
         cpuThreads.emplace_back(cpuWorker, i);
     }
 
+    bool confirmInitialize = false;
     string command;
+
     while (true) {
         cout << "Enter a command: ";
         getline(cin, command);
 
         if (command == "initialize") {
-            cout << "initialize command recognized. Doing something." << endl;
+            if (loadSystemConfig()) {
+                cout << "\n System configuration loaded successfully:\n";
+                cout << "--------------------------------------------\n";
+                cout << "- num-cpu:            " << GLOBAL_CONFIG.numCPU << "\n";
+                cout << "- scheduler:          " << GLOBAL_CONFIG.scheduler << "\n";
+                cout << "- quantum-cycles:     " << GLOBAL_CONFIG.quantumCycles << "\n";
+                cout << "- batch-process-freq: " << GLOBAL_CONFIG.batchProcessFreq << "\n";
+                cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";//event for min ins larger than max ins
+                cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
+                cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << " ms\n";
+                cout << "--------------------------------------------\n";
+                confirmInitialize = true;
+                break;
+            }
+            else {
+                cout << " Failed to load system configuration.\n";
+            }
+
         }
-        else if (command.rfind("screen", 0) == 0) {
+        else if (command == "exit") {
+            cout << "exit command recognized. Exiting CSOPESY command line." << endl;
+            break;
+        }
+        else {
+            cout << "Unknown command." << endl;
+        }
+    }
+
+    while (true && confirmInitialize == true) {
+        cout << "Enter a command: ";
+        getline(cin, command);
+
+        if (command.rfind("screen", 0) == 0) {
             handleScreenCommand(command, manager);
         }
         else if (command == "scheduler-start") {
-            cout << "scheduler-start command recognized. Doing something." << endl;
+            if (!schedulerRunning) {
+                schedulerRunning = true;
+                scheduler_start_thread = thread(scheduler_start, ref(manager));
+            }
+            else {
+                cout << "Scheduler is already running!" << endl;
+            }
         }
         else if (command == "scheduler-stop") {
             cout << "scheduler-stop command recognized. Doing something." << endl;
+            if (schedulerRunning) {
+                stopScheduler = true;
+                schedulerRunning = false;
+                cv.notify_all();
+                scheduler_start_thread.join();
+                stopScheduler = false;
+            }
+            else {
+                cout << "Scheduler is not running." << endl;
+            }
         }
         else if (command == "clear") {
             clearScreen();
@@ -246,10 +409,10 @@ int main() {
             cout << "Unknown command." << endl;
         }
     }
-
     stopScheduler = true;
     cv.notify_all();
     for (auto& t : cpuThreads) t.join();
+
 
     return 0;
 }

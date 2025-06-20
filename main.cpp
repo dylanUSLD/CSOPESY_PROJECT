@@ -162,9 +162,12 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
         manager.createProcess(processName);
         Process* proc = manager.retrieveProcess(processName);
         if (proc) {
+            lock_guard<mutex> lock(queueMutex);
+            fcfsQueue.push(proc);
             displayProcess(*proc);
             printHeader();
         }
+        cv.notify_one();
     }
     else if (option == "-r" && !processName.empty()) {
         Process* proc = manager.retrieveProcess(processName);
@@ -191,17 +194,27 @@ void scheduler_start(ProcessManager& manager){
         }
         if (stopScheduler) break;
 
-        // creates dummy process 
-        string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
-        manager.createProcess(procName);
-        // adds the created process to the queue
-        Process* proc = manager.retrieveProcess(procName);
-        if (proc) {
-            lock_guard<mutex> lock(queueMutex);
-            fcfsQueue.push(proc);
+        while (!stopScheduler) {
+            string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
+            
+                // checks if process already exists
+            if (manager.retrieveProcess(procName) == nullptr){
+                    // creates dummy process 
+                manager.createProcess(procName);
+                    // adds the created process to the queue
+                Process* proc = manager.retrieveProcess(procName);
+                if (proc) {
+                    lock_guard<mutex> lock(queueMutex);
+                    fcfsQueue.push(proc);
+                }
+                cv.notify_one();
+                ++processCountName;
+                break;
+            } 
+            else {
+                ++processCountName;
+            }
         }
-        cv.notify_one();
-        ++processCountName;
     }
 }
 

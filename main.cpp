@@ -136,12 +136,6 @@ void cpuWorker(int coreId) {
             proc->coreAssigned = coreId;
             for (int i = 0; i < proc->totalLine; ++i) {
                 proc->currentLine++;
-                string timestamp = generateTimestamp();
-                string logEntry = "(" + timestamp + ") Core:" + to_string(coreId) +
-                    " \"Hello world from " + proc->name + "!\"\n";
-                ofstream logFile(proc->name + ".txt", ios::app);
-                logFile << logEntry;
-                logFile.close();
                 this_thread::sleep_for(chrono::milliseconds(40));
             }
             proc->isFinished = true;
@@ -162,9 +156,12 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
         manager.createProcess(processName);
         Process* proc = manager.retrieveProcess(processName);
         if (proc) {
+            lock_guard<mutex> lock(queueMutex);
+            fcfsQueue.push(proc);
             displayProcess(*proc);
             printHeader();
         }
+        cv.notify_one();
     }
     else if (option == "-r" && !processName.empty()) {
         Process* proc = manager.retrieveProcess(processName);
@@ -181,25 +178,49 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
     }
 }
 
-int main() {
-    ProcessManager manager;
+void scheduler_start(ProcessManager& manager){
+    // Automatically create N processes and queue them for running
+    int processCountName = 1;
+    while (!stopScheduler) {
+        // Interruptible sleep/frequency
+        for (int frequency = 0; frequency < 30 && !stopScheduler; ++frequency) {
+            this_thread::sleep_for(chrono::milliseconds(100));
+        }
+        if (stopScheduler) break;
 
-    // Automatically create 10 processes and queue them for printing
-    for (int i = 1; i <= 10; ++i) {
-        string procName = "process" + (i < 10 ? "0" + to_string(i) : to_string(i));
-        manager.createProcess(procName);
-        Process* proc = manager.retrieveProcess(procName);
-        if (proc) {
-            lock_guard<mutex> lock(queueMutex);
-            fcfsQueue.push(proc);
+        while (!stopScheduler) {
+            string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
+            
+                // checks if process already exists
+            if (manager.retrieveProcess(procName) == nullptr){
+                    // creates dummy process 
+                manager.createProcess(procName);
+                    // adds the created process to the queue
+                Process* proc = manager.retrieveProcess(procName);
+                if (proc) {
+                    lock_guard<mutex> lock(queueMutex);
+                    fcfsQueue.push(proc);
+                }
+                cv.notify_one();
+                ++processCountName;
+                break;
+            } 
+            else {
+                ++processCountName;
+            }
         }
     }
-    cv.notify_all();
+}
+
+int main() {
+    ProcessManager manager;
+    thread scheduler_start_thread;
+    bool schedulerRunning = false;
 
     printHeader();
 
     vector<thread> cpuThreads;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 4; ++i) {
         cpuThreads.emplace_back(cpuWorker, i);
     }
 
@@ -215,10 +236,26 @@ int main() {
             handleScreenCommand(command, manager);
         }
         else if (command == "scheduler-start") {
-            cout << "scheduler-start command recognized. Doing something." << endl;
+            if (!schedulerRunning) {
+                schedulerRunning = true;
+                scheduler_start_thread = thread(scheduler_start, ref(manager));
+            }
+            else {
+                cout << "Scheduler is already running!" << endl;
+            }
         }
         else if (command == "scheduler-stop") {
             cout << "scheduler-stop command recognized. Doing something." << endl;
+            if (schedulerRunning){
+                stopScheduler = true;
+                schedulerRunning = false;
+                cv.notify_all();
+                scheduler_start_thread.join();
+                stopScheduler = false;
+            }
+            else {
+                cout << "Scheduler is not running." << endl;
+            }
         }
         else if (command == "clear") {
             clearScreen();
@@ -246,10 +283,10 @@ int main() {
             cout << "Unknown command." << endl;
         }
     }
-
     stopScheduler = true;
     cv.notify_all();
     for (auto& t : cpuThreads) t.join();
+    
 
     return 0;
 }

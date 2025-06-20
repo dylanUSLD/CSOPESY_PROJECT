@@ -182,19 +182,26 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
 }
 
 void scheduler_start(ProcessManager& manager){
-    // Automatically create 10 processes and queue them for printing
-    for (int i = 1; i <= 10; ++i) {
-        this_thread::sleep_for(chrono::seconds(3)); // sleep before creating a process == CPU TICK
+    // Automatically create N processes and queue them for running
+    int processCountName = 1;
+    while (!stopScheduler) {
+        // Interruptible sleep/frequency
+        for (int frequency = 0; frequency < 30 && !stopScheduler; ++frequency) {
+            this_thread::sleep_for(chrono::milliseconds(100));
+        }
+        if (stopScheduler) break;
 
-        string procName = "process" + (i < 10 ? "0" + to_string(i) : to_string(i));
+        // creates dummy process 
+        string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
         manager.createProcess(procName);
+        // adds the created process to the queue
         Process* proc = manager.retrieveProcess(procName);
         if (proc) {
             lock_guard<mutex> lock(queueMutex);
             fcfsQueue.push(proc);
         }
         cv.notify_one();
-        
+        ++processCountName;
     }
 }
 
@@ -206,7 +213,7 @@ int main() {
     printHeader();
 
     vector<thread> cpuThreads;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 4; ++i) {
         cpuThreads.emplace_back(cpuWorker, i);
     }
 

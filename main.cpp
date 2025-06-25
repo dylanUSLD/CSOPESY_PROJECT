@@ -117,7 +117,11 @@ void clearScreen() {
 string generateTimestamp() {
     auto now = time(nullptr);
     tm localTime;
-    localtime_s(&localTime , &now);
+#ifdef _WIN32   
+    localtime_s(&localTime, &now); // Windows
+#else
+    localtime_r(&now, &localTime); // POSIX (macOS, Linux)
+#endif
     stringstream ss;
     ss << put_time(&localTime, "%m/%d/%Y %I:%M:%S%p");
     return ss.str();
@@ -261,7 +265,6 @@ void cpuWorker(int coreId) {
             proc->isFinished = true;
             proc->finishedTime = generateTimestamp();
         }
-        manager.listProcesses();
     }
 }
 

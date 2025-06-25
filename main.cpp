@@ -139,6 +139,17 @@ int cpuBurstGenerator() {//if func will be use in scheduler start, then change v
     return cpuBurst;
 }
 
+vector<int> process_instructions(int cpuBurst) {
+    vector<int> instructions;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(1, 6);
+    for (int i=0; i < cpuBurst; i++) {
+        instructions.push_back(distrib(gen));
+    }
+    return instructions;
+}  
+
 struct Process {
     string name;
     int currentLine = 0;
@@ -147,12 +158,18 @@ struct Process {
     int coreAssigned = -1;
     bool isFinished = false;
     string finishedTime;
+    vector<int> instructions;
 };
 
 void printProcessDetails(const Process& proc) {
     cout << "Process: " << proc.name << endl;
     cout << "Instruction: " << proc.currentLine << " of " << proc.totalLine << endl;
     cout << "Created: " << proc.timestamp << endl;
+    cout << "Instructions: [ ";
+    for (int ins : proc.instructions) {
+        cout << ins << " ";
+    }
+    cout << "]" << endl;
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";
@@ -184,7 +201,9 @@ public:
             cout << "Process " << name << " already exists." << endl;
             return;
         }
-        processes[name] = make_unique<Process>(Process{ name, 0, cpuBurstGenerator(), generateTimestamp()});
+        int cpuBurst = cpuBurstGenerator();
+        vector<int> instruction = process_instructions(cpuBurst);
+        processes[name] = make_unique<Process>(Process{ name, 0, cpuBurst, generateTimestamp(), -1, false, "", instruction });
     }
 
     Process* retrieveProcess(const string& name) {

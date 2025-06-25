@@ -210,6 +210,7 @@ public:
 };
 
 queue<Process*> fcfsQueue;
+queue<Process*> rrQueue;
 mutex queueMutex;
 condition_variable cv;
 bool stopScheduler = false;
@@ -219,21 +220,48 @@ void cpuWorker(int coreId) {
         Process* proc = nullptr;
         {
             unique_lock<mutex> lock(queueMutex);
-            cv.wait(lock, [] { return !fcfsQueue.empty() || stopScheduler; });
-            if (!fcfsQueue.empty()) {
+            cv.wait(lock, [] { return (!fcfsQueue.empty() || !rrQueue.empty()) || stopScheduler; });
+            
+            if (GLOBAL_CONFIG.scheduler == "fcfs" && !fcfsQueue.empty()) {
                 proc = fcfsQueue.front();
                 fcfsQueue.pop();
             }
+            else if (GLOBAL_CONFIG.scheduler == "rr" && !rrQueue.empty()) {
+                proc = rrQueue.front();
+                rrQueue.pop();
+            }
         }
+
         if (proc) {
             proc->coreAssigned = coreId;
-            for (int i = 0; i < proc->totalLine; ++i) {
-                proc->currentLine++;
-                this_thread::sleep_for(chrono::milliseconds(40));
+            
+            if (GLOBAL_CONFIG.scheduler == "fcfs") {
+                while (proc->currentLine < proc->totalLine && !stopScheduler) {
+                    proc->currentLine++;
+                    this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
+                }
             }
+            else if (GLOBAL_CONFIG.scheduler == "rr") {
+                int executedInstructions = 0;
+                while (proc->currentLine < proc->totalLine && 
+                       executedInstructions < GLOBAL_CONFIG.quantumCycles && 
+                       !stopScheduler) {
+                    proc->currentLine++;
+                    executedInstructions++;
+                    this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
+                }
+                if (proc->currentLine < proc->totalLine) {
+                    lock_guard<mutex> lock(queueMutex);
+                    rrQueue.push(proc);
+                    cv.notify_one();
+                    continue;
+                }
+            }
+
             proc->isFinished = true;
             proc->finishedTime = generateTimestamp();
         }
+        manager.listProcesses();
     }
 }
 
@@ -250,7 +278,11 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
         Process* proc = manager.retrieveProcess(processName);
         if (proc) {
             lock_guard<mutex> lock(queueMutex);
-            fcfsQueue.push(proc);
+            if (GLOBAL_CONFIG.scheduler == "fcfs") {
+                fcfsQueue.push(proc);
+            } else if (GLOBAL_CONFIG.scheduler == "rr") {
+                rrQueue.push(proc);
+            }
             displayProcess(*proc);
             printHeader();
         }
@@ -276,7 +308,7 @@ void scheduler_start(ProcessManager& manager) {
     int processCountName = 1;
     while (!stopScheduler) {
         // Interruptible sleep/frequency
-        for (int frequency = 0; frequency < 10 && !stopScheduler; ++frequency) {
+        for (int frequency = 0; frequency < 2 && !stopScheduler; ++frequency) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
         if (stopScheduler) break;
@@ -284,15 +316,16 @@ void scheduler_start(ProcessManager& manager) {
         while (!stopScheduler) {
             string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
 
-            // checks if process already exists
             if (manager.retrieveProcess(procName) == nullptr) {
-                // creates dummy process 
                 manager.createProcess(procName);
-                // adds the created process to the queue
                 Process* proc = manager.retrieveProcess(procName);
                 if (proc) {
                     lock_guard<mutex> lock(queueMutex);
-                    fcfsQueue.push(proc);
+                    if (GLOBAL_CONFIG.scheduler == "fcfs") {
+                        fcfsQueue.push(proc);
+                    } else if (GLOBAL_CONFIG.scheduler == "rr") {
+                        rrQueue.push(proc);
+                    }
                 }
                 cv.notify_one();
                 ++processCountName;
@@ -314,7 +347,7 @@ int main() {
     printHeader();
 
     vector<thread> cpuThreads;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 1; ++i) {
         cpuThreads.emplace_back(cpuWorker, i);
     }
 

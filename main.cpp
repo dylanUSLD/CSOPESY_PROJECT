@@ -139,16 +139,74 @@ int cpuBurstGenerator() {//if func will be use in scheduler start, then change v
     return cpuBurst;
 }
 
-vector<int> process_instructions(int cpuBurst) {
-    vector<int> instructions;
+vector<string> process_instructions(int cpuBurst) {
+    vector<string> instructions;
+    vector<string> instructionSet = {
+        "PRINT", "DECLARE", "ADD", "SUBTRACT", "SLEEP", "FOR"
+    };
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distrib(1, 6);
-    for (int i=0; i < cpuBurst; i++) {
-        instructions.push_back(distrib(gen));
+    std::uniform_int_distribution<> distrib(0, instructionSet.size() - 1);
+    for (int i = 0; i < cpuBurst; i++) {
+        instructions.push_back(instructionSet[distrib(gen)]);
     }
     return instructions;
 }  
+
+void instructions_manager(int currentLine, vector<string>& instructions, vector<int>& temporary) {
+    if (currentLine >= instructions.size()) return;
+
+    const string& cmd = instructions[currentLine];
+
+    if (cmd == "PRINT") {
+        stringstream ss;
+        ss << "PRINTS Temp Registers: [ "
+           << temporary[0] << " " << temporary[1] << " " << temporary[2] << " ]";
+        instructions[currentLine] = ss.str();
+    }
+    else if (cmd == "DECLARE") {
+        random_device rd;
+        mt19937 gen(rd());
+        uniform_int_distribution<> distrib(1, 100);
+        temporary[0] = distrib(gen);
+        temporary[1] = distrib(gen);
+        temporary[2] = 0;
+        stringstream ss;
+        ss << "DECLARES temp0=" << temporary[0]
+           << ", temp1=" << temporary[1] << ", temp2=0";
+        instructions[currentLine] = ss.str();
+    }
+    else if (cmd == "ADD") {
+        temporary[2] = temporary[0] + temporary[1];
+        stringstream ss;
+        ss << "ADDS " << temporary[0] << " + " << temporary[1]
+           << " = " << temporary[2];
+        instructions[currentLine] = ss.str();
+    }
+    else if (cmd == "SUBTRACT") {
+        temporary[2] = temporary[0] - temporary[1];
+        stringstream ss;
+        ss << "SUBTRACTS " << temporary[0] << " - " << temporary[1]
+           << " = " << temporary[2];
+        instructions[currentLine] = ss.str();
+    }
+    else if (cmd == "SLEEP") {
+        this_thread::sleep_for(chrono::milliseconds(100));
+        instructions[currentLine] = "SLEEPS 100ms";
+    }
+    else if (cmd == "FOR") {
+        stringstream ss;
+        ss << "FOR LOOP started: ";
+        for (int i = 0; i < 3; ++i) {
+            temporary[0]++;
+            ss << "iter" << (i + 1) << " temp0=" << temporary[0] << " ";
+        }
+        instructions[currentLine] = ss.str();
+    }
+    else {
+        instructions[currentLine] = "UNKNOWN INSTRUCTION: " + cmd;
+    }
+}
 
 struct Process {
     string name;
@@ -158,7 +216,8 @@ struct Process {
     int coreAssigned = -1;
     bool isFinished = false;
     string finishedTime;
-    vector<int> instructions;
+    vector<string> instructions;
+    vector<int> temporary = {0, 0, 0};
 };
 
 void printProcessDetails(const Process& proc) {
@@ -166,7 +225,7 @@ void printProcessDetails(const Process& proc) {
     cout << "Instruction: " << proc.currentLine << " of " << proc.totalLine << endl;
     cout << "Created: " << proc.timestamp << endl;
     cout << "Instructions: [ ";
-    for (int ins : proc.instructions) {
+    for (const string& ins : proc.instructions) {
         cout << ins << " ";
     }
     cout << "]" << endl;
@@ -202,7 +261,7 @@ public:
             return;
         }
         int cpuBurst = cpuBurstGenerator();
-        vector<int> instruction = process_instructions(cpuBurst);
+        vector<string> instruction = process_instructions(cpuBurst);
         processes[name] = make_unique<Process>(Process{ name, 0, cpuBurst, generateTimestamp(), -1, false, "", instruction });
     }
 
@@ -260,19 +319,23 @@ void cpuWorker(int coreId) {
             
             if (GLOBAL_CONFIG.scheduler == "fcfs") {
                 while (proc->currentLine < proc->totalLine && !stopScheduler) {
+                    instructions_manager(proc->currentLine, proc->instructions, proc->temporary);
                     proc->currentLine++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
                 }
+
             }
             else if (GLOBAL_CONFIG.scheduler == "rr") {
                 int executedInstructions = 0;
                 while (proc->currentLine < proc->totalLine && 
-                       executedInstructions < GLOBAL_CONFIG.quantumCycles && 
-                       !stopScheduler) {
+                    executedInstructions < GLOBAL_CONFIG.quantumCycles && 
+                    !stopScheduler) {
+                    instructions_manager(proc->currentLine, proc->instructions, proc->temporary);
                     proc->currentLine++;
                     executedInstructions++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
                 }
+
                 if (proc->currentLine < proc->totalLine) {
                     lock_guard<mutex> lock(queueMutex);
                     rrQueue.push(proc);

@@ -276,6 +276,7 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
 }
 
 struct Process {
+    int id;
     string name;
     int currentLine = 0;
     int totalLine = 100;
@@ -289,13 +290,16 @@ struct Process {
 
 void printProcessDetails(const Process& proc) {
     cout << "Process: " << proc.name << endl;
+    cout << "ID: " << proc.id << endl;
     cout << "Instruction: " << proc.currentLine << " of " << proc.totalLine << endl;
     cout << "Created: " << proc.timestamp << endl;
+    /* COMMENTED OUT SINCE NOT SURE OF SPECS IF INCLUDED
     cout << "Instructions: [ ";
     for (const string& ins : proc.instructions) {
         cout << ins << " ";
     }
     cout << "]" << endl;
+    */
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";
@@ -312,6 +316,17 @@ void displayProcess(const Process& proc) {
             clearScreen();
             printProcessDetails(proc);
         }
+        else if (subCommand == "process-smi") {
+             cout << "\nprocess_name: " << proc.name << endl;
+            cout << "ID: " << proc.coreAssigned << endl;
+            cout << "Logs:\n(" << proc.timestamp << ") Core: " << proc.coreAssigned << endl;
+            cout << "\nCurrent instruction line " << proc.currentLine << endl;
+            cout << "Lines of code: " << proc.totalLine << endl;
+            if (proc.isFinished) {
+                cout << "\nStatus: finished\n";
+            }
+            cout << endl;
+        }
         else {
             cout << "Unknown command inside process view." << endl;
         }
@@ -321,6 +336,7 @@ void displayProcess(const Process& proc) {
 class ProcessManager {
 private:
     unordered_map<string, unique_ptr<Process>> processes;
+    int nextProcessID = 1;
 public:
     void createProcess(string name) {
         if (processes.find(name) != processes.end()) {
@@ -329,7 +345,17 @@ public:
         }
         int cpuBurst = cpuBurstGenerator();
         vector<string> instruction = process_instructions(cpuBurst);
-        processes[name] = make_unique<Process>(Process{ name, 0, cpuBurst, generateTimestamp(), -1, false, "", instruction });
+        processes[name] = make_unique<Process>(Process{
+            nextProcessID++,
+            name,
+            0,
+            cpuBurst,
+            generateTimestamp(),
+            -1,
+            false,
+            "",
+            instruction
+        });
     }
 
     Process* retrieveProcess(const string& name) {

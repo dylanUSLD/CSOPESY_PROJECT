@@ -505,7 +505,7 @@ void cpuWorker(int coreId) {
 
             }
             else if (GLOBAL_CONFIG.scheduler == "rr") {
-                int executedInstructions = 0;
+                uint64_t executedInstructions = 0;
                 while (proc->currentLine < proc->totalLine &&
                     executedInstructions < GLOBAL_CONFIG.quantumCycles &&
                     !stopScheduler) {

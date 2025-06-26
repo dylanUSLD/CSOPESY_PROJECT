@@ -204,76 +204,6 @@ vector<string> process_instructions(uint64_t cpuBurst) {
     }
     return instructions;
 }
-/*
-void instructions_manager(uint64_t currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) { //append core and time and date
-    if (currentLine >= instructions.size()) return;
-
-    string prefix = "(" + generateTimestamp() + ") Core: " + to_string(coreId) + " ";
-
-    stringstream ss(instructions[currentLine]);
-    string command;
-    ss >> command;
-
-    if (command == "DECLARE") {
-        string var;
-        uint16_t val;
-        ss >> var >> val;
-        memory[var] = val;
-        instructions[currentLine] = prefix + "\"DECLARE " + var + " = " + to_string(val) + "\"";
-    }
-    else if (command == "PRINT") {
-        string var;
-        ss >> var;
-        uint16_t val = memory.count(var) ? memory[var] : 0;
-        instructions[currentLine] = prefix + "\"PRINT " + var + " = " + to_string(val) + "\"";
-    }
-    else if (command == "ADD") {
-        string a, b;
-        ss >> a >> b;
-        uint16_t valA = memory.count(a) ? memory[a] : 0;
-        uint16_t valB = memory.count(b) ? memory[b] : 0;
-        uint16_t result = clampUint16(valA + valB);
-        string resultVar = "res" + to_string(currentLine); // Optional: unique result var
-        memory[resultVar] = result;
-        instructions[currentLine] = prefix + "\"ADD " + a + "(" + to_string(valA) + ") + " + b + "(" + to_string(valB) + ") = " + to_string(result) + "\"";
-    }
-    else if (command == "SUBTRACT") {
-        string a, b;
-        ss >> a >> b;
-        uint16_t valA = memory.count(a) ? memory[a] : 0;
-        uint16_t valB = memory.count(b) ? memory[b] : 0;
-        uint16_t result = clampUint16(valA - valB);
-        string resultVar = "res" + to_string(currentLine);
-        memory[resultVar] = result;
-        instructions[currentLine] = prefix + "\"SUBTRACT " + a + "(" + to_string(valA) + ") - " + b + "(" + to_string(valB) + ") = " + to_string(result) + "\"";
-    }
-    else if (command == "SLEEP") {
-        int ms = 100;
-        ss >> ms;
-        this_thread::sleep_for(chrono::milliseconds(ms));
-        instructions[currentLine] = prefix + "\"SLEPT for " + to_string(ms) + "ms\"";
-    }
-    else if (command == "FOR") {
-        string var;
-        int count = 3;
-        ss >> var >> count;
-
-        if (!memory.count(var)) {
-            memory[var] = 0;
-        }
-
-        stringstream log;
-        log << "FOR loop on " << var << ": ";
-        for (int i = 0; i < count; ++i) {
-            memory[var]++;
-            log << "[" << i + 1 << "]=" << memory[var] << " ";
-        }
-        instructions[currentLine] = prefix + "\"" + log.str() + "\"";//problems may occur ehre
-    }
-    else {
-        instructions[currentLine] = prefix + "\"UNKNOWN INSTRUCTION: " + command + "\"";//problems may occur ehre
-    }
-}*/
 
 void instructions_manager(uint64_t currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) {
     // Ensure instructions has enough space to store the line
@@ -475,6 +405,7 @@ queue<Process*> rrQueue;
 mutex queueMutex;
 condition_variable cv;
 bool stopScheduler = false;
+bool stopProcessCreation = false;
 
 void cpuWorker(int coreId) {
     while (!stopScheduler) {
@@ -573,12 +504,12 @@ void scheduler_start(ProcessManager& manager) {
     int processCountName = 1;
     while (!stopScheduler) {
         // Interruptible sleep/frequency
-        for (int frequency = 0; frequency < 10 && !stopScheduler; ++frequency) {
+        for (int frequency = 0; frequency < 30 && !stopProcessCreation; ++frequency) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
-        if (stopScheduler) break;
+        if (stopProcessCreation) break;
 
-        while (!stopScheduler) {
+        while (!stopProcessCreation) {
             string procName = "process" + (processCountName < 10 ? "0" + to_string(processCountName) : to_string(processCountName));
 
             if (manager.retrieveProcess(procName) == nullptr) {
@@ -637,12 +568,14 @@ int main() {
                 if (confirmInitialize) {
                     cout << "Reinitializing system...\n";
                     stopScheduler = true;
+                    stopProcessCreation = true;
                     cv.notify_all();
                     for (auto& t : cpuThreads) {
                         if (t.joinable()) t.join();
                     }
                     cpuThreads.clear();  // Important: clear thread list
                     stopScheduler = false;
+                    stopProcessCreation = false;
                 }
 
                 // Start new CPU threads based on updated config
@@ -672,6 +605,7 @@ int main() {
                 continue;
             }
             if (!schedulerRunning) {
+                stopProcessCreation = false;
                 schedulerRunning = true;
                 scheduler_start_thread = thread(scheduler_start, ref(manager));
             }
@@ -682,11 +616,18 @@ int main() {
         else if (command == "scheduler-stop") {
             if (schedulerRunning) {
                 cout << "Stopping scheduler...\n";
-                stopScheduler = true;
+                
+                /*stopScheduler = true;
                 schedulerRunning = false;
                 cv.notify_all();
                 scheduler_start_thread.join();
-                stopScheduler = false;
+                stopScheduler = false;*/
+
+                stopProcessCreation = true;
+                schedulerRunning = false;
+                if (scheduler_start_thread.joinable()) {
+                    scheduler_start_thread.join();
+                }
             }
             else {
                 cout << "Scheduler is not running.\n";
@@ -706,6 +647,7 @@ int main() {
     }
 
     stopScheduler = true;
+    stopProcessCreation = true;
     cv.notify_all();
     for (auto& t : cpuThreads) t.join();
 

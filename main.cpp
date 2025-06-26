@@ -486,7 +486,7 @@ void scheduler_start(ProcessManager& manager) {
     int processCountName = 1;
     while (!stopScheduler) {
         // Interruptible sleep/frequency
-        for (int frequency = 0; frequency < 2 && !stopScheduler; ++frequency) {
+        for (int frequency = 0; frequency < 30 && !stopScheduler; ++frequency) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
         if (stopScheduler) break;
@@ -545,14 +545,26 @@ int main() {
                 cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << " ms\n";
                 cout << "--------------------------------------------\n";
 
-                if (!confirmInitialize) {
-                    for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
-                        cpuThreads.emplace_back(cpuWorker, i+1);
-                    }
-                    confirmInitialize = true;
-                } else {
-                    cout << "System config reloaded.\n";
+                // Stop old threads if already initialized
+            if (confirmInitialize) {
+                cout << "Reinitializing system...\n";
+                stopScheduler = true;
+                cv.notify_all();
+                for (auto& t : cpuThreads) {
+                    if (t.joinable()) t.join();
                 }
+                cpuThreads.clear();  // Important: clear thread list
+                stopScheduler = false;
+            }
+
+            // Start new CPU threads based on updated config
+            for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
+                cpuThreads.emplace_back(cpuWorker, i + 1);
+            }
+
+            confirmInitialize = true;
+            cout << "System config loaded and CPU threads restarted.\n";
+
             } else {
                 cout << " Failed to load system configuration.\n";
             }

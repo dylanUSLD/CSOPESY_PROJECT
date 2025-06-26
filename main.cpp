@@ -293,13 +293,21 @@ void printProcessDetails(const Process& proc) {
     cout << "ID: " << proc.id << endl;
     cout << "Instruction: " << proc.currentLine << " of " << proc.totalLine << endl;
     cout << "Created: " << proc.timestamp << endl;
-    /* COMMENTED OUT SINCE NOT SURE OF SPECS IF INCLUDED
-    cout << "Instructions: [ ";
-    for (const string& ins : proc.instructions) {
-        cout << ins << " ";
+    // COMMENTED OUT SINCE NOT SURE OF SPECS IF INCLUDED
+    if (proc.instructions.size() == 1) {
+        stringstream ss(proc.instructions[0]);
+        string token;
+        while (getline(ss, token, '-')) {
+            if (!token.empty()) {
+                cout << "  - " << token << endl;
+            }
+        }
+    } else {
+        for (const string& ins : proc.instructions) {
+            cout << "  - " << ins << endl;
+        }
     }
-    cout << "]" << endl;
-    */
+    
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";

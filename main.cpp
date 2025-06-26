@@ -27,8 +27,8 @@ struct SystemConfig {
     string scheduler = "";               // Empty string = "not set"
     uint32_t quantumCycles = 0;          // 0 = "not set"
     uint32_t batchProcessFreq = 0;
-    uint32_t minInstructions = 0;
-    uint32_t maxInstructions = 0;
+    uint64_t minInstructions = 0;
+    uint64_t maxInstructions = 0;
     uint32_t delayPerExec = 0;
 };
 
@@ -73,12 +73,12 @@ bool loadSystemConfig(const string& filename = "config.txt") {
             GLOBAL_CONFIG.batchProcessFreq = value;
         }
         else if (key == "min-ins") {
-            uint32_t value;
+            uint64_t value;
             file >> value;
             GLOBAL_CONFIG.minInstructions = value;
         }
         else if (key == "max-ins") {
-            uint32_t value;
+            uint64_t value;
             file >> value;
             GLOBAL_CONFIG.maxInstructions = value;
         }
@@ -133,19 +133,16 @@ string generateTimestamp() {
     return ss.str();
 }
 
-int cpuBurstGenerator() {//if func will be use in scheduler start, then change void to int and return cpuBurst
+uint64_t cpuBurstGenerator() {
     std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distrib(GLOBAL_CONFIG.minInstructions, GLOBAL_CONFIG.maxInstructions);
+    std::mt19937_64 gen(rd()); // use 64-bit generator
+    std::uniform_int_distribution<uint64_t> distrib(GLOBAL_CONFIG.minInstructions, GLOBAL_CONFIG.maxInstructions);
 
-    int cpuBurst = distrib(gen);
-
-    //cout << "Generated CPU Burst: " << cpuBurst << endl;
-
-    return cpuBurst;
+    return distrib(gen);
 }
 
-vector<string> process_instructions(int cpuBurst) {
+
+vector<string> process_instructions(uint64_t cpuBurst) {
     vector<string> instructions;
     unordered_map<string, uint16_t> declaredVars;
     vector<string> varNames;
@@ -155,7 +152,7 @@ vector<string> process_instructions(int cpuBurst) {
     uniform_int_distribution<> cmdDistrib(0, 5);
     uniform_int_distribution<> valDistrib(1, 100);
 
-    for (int i = 0; i < cpuBurst; ++i) {
+    for (uint64_t i = 0; i < cpuBurst; ++i) {
         int cmd = cmdDistrib(gen);
         stringstream ss;
 
@@ -207,8 +204,8 @@ vector<string> process_instructions(int cpuBurst) {
     }
     return instructions;
 }
-
-void instructions_manager(int currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) { //append core and time and date
+/*
+void instructions_manager(uint64_t currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) { //append core and time and date
     if (currentLine >= instructions.size()) return;
 
     string prefix = "(" + generateTimestamp() + ") Core: " + to_string(coreId) + " ";
@@ -276,13 +273,99 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
     else {
         instructions[currentLine] = prefix + "\"UNKNOWN INSTRUCTION: " + command + "\"";//problems may occur ehre
     }
+}*/
+
+void instructions_manager(uint64_t currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) {
+    // Ensure instructions has enough space to store the line
+    if (instructions.size() <= currentLine)
+        instructions.resize(currentLine + 1);
+
+    string prefix = "(" + generateTimestamp() + ") Core: " + to_string(coreId) + " ";
+
+    // Random instruction generation
+    static thread_local mt19937 gen(random_device{}());
+    uniform_int_distribution<> cmdDistrib(0, 5);
+    uniform_int_distribution<> valDistrib(1, 100);
+
+    stringstream ss;
+    stringstream log;
+    int cmd = cmdDistrib(gen);
+
+    // Track declared vars
+    static thread_local vector<string> varNames;
+
+    if (cmd == 1 || varNames.empty()) {
+        // DECLARE
+        string var = "v" + to_string(varNames.size());
+        uint16_t val = valDistrib(gen);
+        memory[var] = val;
+        varNames.push_back(var);
+        log << "DECLARE " << var << " = " << val;
+    }
+    else if (cmd == 0 && !varNames.empty()) {
+        // PRINT
+        string var = varNames[gen() % varNames.size()];
+        uint16_t val = memory.count(var) ? memory[var] : 0;
+        log << "PRINT " << var << " = " << val;
+    }
+    else if (cmd == 2 && varNames.size() >= 2) {
+        // ADD
+        string a = varNames[gen() % varNames.size()];
+        string b = varNames[gen() % varNames.size()];
+        uint16_t valA = memory.count(a) ? memory[a] : 0;
+        uint16_t valB = memory.count(b) ? memory[b] : 0;
+        uint16_t result = clampUint16(valA + valB);
+        string resultVar = "res" + to_string(currentLine);
+        memory[resultVar] = result;
+        log << "ADD " << a << "(" << valA << ") + " << b << "(" << valB << ") = " << result;
+    }
+    else if (cmd == 3 && varNames.size() >= 2) {
+        // SUBTRACT
+        string a = varNames[gen() % varNames.size()];
+        string b = varNames[gen() % varNames.size()];
+        uint16_t valA = memory.count(a) ? memory[a] : 0;
+        uint16_t valB = memory.count(b) ? memory[b] : 0;
+        uint16_t result = clampUint16(valA - valB);
+        string resultVar = "res" + to_string(currentLine);
+        memory[resultVar] = result;
+        log << "SUBTRACT " << a << "(" << valA << ") - " << b << "(" << valB << ") = " << result;
+    }
+    else if (cmd == 4) {
+        // SLEEP
+        int ms = 100;
+        this_thread::sleep_for(chrono::milliseconds(ms));
+        log << "SLEPT for " << ms << "ms";
+    }
+    else {
+        // FOR
+        if (varNames.empty()) {
+            string var = "v" + to_string(varNames.size());
+            uint16_t val = valDistrib(gen);
+            memory[var] = val;
+            varNames.push_back(var);
+        }
+
+        string var = varNames[gen() % varNames.size()];
+        int count = 3;
+        if (!memory.count(var)) memory[var] = 0;
+
+        log << "FOR loop on " << var << ": ";
+        for (int i = 0; i < count; ++i) {
+            memory[var]++;
+            log << "[" << i + 1 << "]=" << memory[var] << " ";
+        }
+    }
+
+    // Save result in instruction log
+    instructions[currentLine] = prefix + "\"" + log.str() + "\"";
 }
+
 
 struct Process {
     int id;
     string name;
-    int currentLine = 0;
-    int totalLine = 100;
+    uint64_t currentLine = 0;
+    uint64_t totalLine = 100;
     string timestamp;
     int coreAssigned = -1;
     bool isFinished = false;
@@ -298,7 +381,7 @@ void printProcessDetails(const Process& proc) {
     cout << "Created: " << proc.timestamp << endl;
 
     // Print only finished instructions
-    for (int i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
+    for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
         cout << "  - " << proc.instructions[i] << endl;
     }
 
@@ -346,8 +429,8 @@ public:
             cout << "Process " << name << " already exists." << endl;
             return;
         }
-        int cpuBurst = cpuBurstGenerator();
-        vector<string> instruction = process_instructions(cpuBurst);
+        uint64_t cpuBurst = cpuBurstGenerator();
+        vector<string> instructions;
         processes[name] = make_unique<Process>(Process{
             nextProcessID++,
             name,
@@ -357,7 +440,7 @@ public:
             -1,
             false,
             "",
-            instruction
+            instructions
             });
     }
 

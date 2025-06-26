@@ -16,6 +16,12 @@
 
 using namespace std;
 
+// clamp function
+uint16_t clampUint16(int value) {
+    return static_cast<uint16_t>(max(0, min(value, 65535)));
+}
+
+
 struct SystemConfig {
     int numCPU = -1;                     // Sentinel: -1 means "not set"
     string scheduler = "";               // Empty string = "not set"
@@ -141,70 +147,131 @@ int cpuBurstGenerator() {//if func will be use in scheduler start, then change v
 
 vector<string> process_instructions(int cpuBurst) {
     vector<string> instructions;
-    vector<string> instructionSet = {
-        "PRINT", "DECLARE", "ADD", "SUBTRACT", "SLEEP", "FOR"
-    };
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distrib(0, instructionSet.size() - 1);
-    for (int i = 0; i < cpuBurst; i++) {
-        instructions.push_back(instructionSet[distrib(gen)]);
+    unordered_map<string, uint16_t> declaredVars;
+    vector<string> varNames;
+
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<> cmdDistrib(0, 5);
+    uniform_int_distribution<> valDistrib(1, 100);
+
+    for (int i = 0; i < cpuBurst; ++i) {
+        int cmd = cmdDistrib(gen);
+        stringstream ss;
+        
+        if (cmd == 1 || varNames.empty()) {
+            // DECLARE
+            string var = "v" + to_string(varNames.size());
+            uint16_t val = valDistrib(gen);
+            declaredVars[var] = val;
+            varNames.push_back(var);
+            ss << "DECLARE " << var << " " << val;
+        }
+        else if (cmd == 0 && !varNames.empty()) {
+            // PRINT
+            string var = varNames[gen() % varNames.size()];
+            ss << "PRINT " << var;
+        }
+        else if (cmd == 2 && varNames.size() >= 2) {
+            // ADD
+            string a = varNames[gen() % varNames.size()];
+            string b = varNames[gen() % varNames.size()];
+            ss << "ADD " << a << " " << b;
+        }
+        else if (cmd == 3 && varNames.size() >= 2) {
+            // SUBTRACT
+            string a = varNames[gen() % varNames.size()];
+            string b = varNames[gen() % varNames.size()];
+            ss << "SUBTRACT " << a << " " << b;
+        }
+        else if (cmd == 4) {
+            // SLEEP
+            ss << "SLEEP 100";
+        }
+        else {
+            // FOR loop
+            if (!varNames.empty()) {
+                string var = varNames[gen() % varNames.size()];
+                ss << "FOR " << var << " 3";
+            } else {
+                string var = "v" + to_string(varNames.size());
+                uint16_t val = valDistrib(gen);
+                declaredVars[var] = val;
+                varNames.push_back(var);
+                ss << "DECLARE " << var << " " << val;
+            }
+        }
+
+        instructions.push_back(ss.str());
     }
     return instructions;
 }  
 
-void instructions_manager(int currentLine, vector<string>& instructions, vector<int>& temporary) {
+void instructions_manager(int currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName) {
     if (currentLine >= instructions.size()) return;
 
-    const string& cmd = instructions[currentLine];
+    stringstream ss(instructions[currentLine]);
+    string command;
+    ss >> command;
 
-    if (cmd == "PRINT") {
-        stringstream ss;
-        ss << "PRINTS Temp Registers: [ "
-           << temporary[0] << " " << temporary[1] << " " << temporary[2] << " ]";
-        instructions[currentLine] = ss.str();
+    if (command == "DECLARE") {
+        string var;
+        uint16_t val;
+        ss >> var >> val;
+        memory[var] = val;
+        instructions[currentLine] = "DECLARE " + var + " = " + to_string(val);
     }
-    else if (cmd == "DECLARE") {
-        random_device rd;
-        mt19937 gen(rd());
-        uniform_int_distribution<> distrib(1, 100);
-        temporary[0] = distrib(gen);
-        temporary[1] = distrib(gen);
-        temporary[2] = 0;
-        stringstream ss;
-        ss << "DECLARES temp0=" << temporary[0]
-           << ", temp1=" << temporary[1] << ", temp2=0";
-        instructions[currentLine] = ss.str();
+    else if (command == "PRINT") {
+        string var;
+        ss >> var;
+        uint16_t val = memory.count(var) ? memory[var] : 0;
+        instructions[currentLine] = "PRINT " + var + " = " + to_string(val);
     }
-    else if (cmd == "ADD") {
-        temporary[2] = temporary[0] + temporary[1];
-        stringstream ss;
-        ss << "ADDS " << temporary[0] << " + " << temporary[1]
-           << " = " << temporary[2];
-        instructions[currentLine] = ss.str();
+    else if (command == "ADD") {
+        string a, b;
+        ss >> a >> b;
+        uint16_t valA = memory.count(a) ? memory[a] : 0;
+        uint16_t valB = memory.count(b) ? memory[b] : 0;
+        uint16_t result = clampUint16(valA + valB);
+        string resultVar = "res" + to_string(currentLine); // Optional: unique result var
+        memory[resultVar] = result;
+        instructions[currentLine] = "ADD " + a + "(" + to_string(valA) + ") + " + b + "(" + to_string(valB) + ") = " + to_string(result);
     }
-    else if (cmd == "SUBTRACT") {
-        temporary[2] = temporary[0] - temporary[1];
-        stringstream ss;
-        ss << "SUBTRACTS " << temporary[0] << " - " << temporary[1]
-           << " = " << temporary[2];
-        instructions[currentLine] = ss.str();
+    else if (command == "SUBTRACT") {
+        string a, b;
+        ss >> a >> b;
+        uint16_t valA = memory.count(a) ? memory[a] : 0;
+        uint16_t valB = memory.count(b) ? memory[b] : 0;
+        uint16_t result = clampUint16(valA - valB);
+        string resultVar = "res" + to_string(currentLine);
+        memory[resultVar] = result;
+        instructions[currentLine] = "SUBTRACT " + a + "(" + to_string(valA) + ") - " + b + "(" + to_string(valB) + ") = " + to_string(result);
     }
-    else if (cmd == "SLEEP") {
-        this_thread::sleep_for(chrono::milliseconds(100));
-        instructions[currentLine] = "SLEEPS 100ms";
+    else if (command == "SLEEP") {
+        int ms = 100;
+        ss >> ms;
+        this_thread::sleep_for(chrono::milliseconds(ms));
+        instructions[currentLine] = "SLEEPED for " + to_string(ms) + "ms";
     }
-    else if (cmd == "FOR") {
-        stringstream ss;
-        ss << "FOR LOOP started: ";
-        for (int i = 0; i < 3; ++i) {
-            temporary[0]++;
-            ss << "iter" << (i + 1) << " temp0=" << temporary[0] << " ";
+    else if (command == "FOR") {
+        string var;
+        int count = 3;
+        ss >> var >> count;
+
+        if (!memory.count(var)) {
+            memory[var] = 0;
         }
-        instructions[currentLine] = ss.str();
+
+        stringstream log;
+        log << "FOR loop on " << var << ": ";
+        for (int i = 0; i < count; ++i) {
+            memory[var]++;
+            log << "[" << i + 1 << "]=" << memory[var] << " ";
+        }
+        instructions[currentLine] = log.str();
     }
     else {
-        instructions[currentLine] = "UNKNOWN INSTRUCTION: " + cmd;
+        instructions[currentLine] = "UNKNOWN INSTRUCTION: " + command;
     }
 }
 
@@ -217,7 +284,7 @@ struct Process {
     bool isFinished = false;
     string finishedTime;
     vector<string> instructions;
-    vector<int> temporary = {0, 0, 0};
+    unordered_map<string, uint16_t> memory;
 };
 
 void printProcessDetails(const Process& proc) {
@@ -319,7 +386,7 @@ void cpuWorker(int coreId) {
             
             if (GLOBAL_CONFIG.scheduler == "fcfs") {
                 while (proc->currentLine < proc->totalLine && !stopScheduler) {
-                    instructions_manager(proc->currentLine, proc->instructions, proc->temporary);
+                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name);
                     proc->currentLine++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
                 }
@@ -330,7 +397,7 @@ void cpuWorker(int coreId) {
                 while (proc->currentLine < proc->totalLine && 
                     executedInstructions < GLOBAL_CONFIG.quantumCycles && 
                     !stopScheduler) {
-                    instructions_manager(proc->currentLine, proc->instructions, proc->temporary);
+                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name);
                     proc->currentLine++;
                     executedInstructions++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
@@ -432,9 +499,6 @@ int main() {
     printHeader();
 
     vector<thread> cpuThreads;
-    for (int i = 0; i < 1; ++i) {
-        cpuThreads.emplace_back(cpuWorker, i);
-    }
 
     bool confirmInitialize = false;
     string command;
@@ -469,6 +533,12 @@ int main() {
         }
         else {
             cout << "Unknown command." << endl;
+        }
+    }
+
+    if (confirmInitialize) {
+        for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
+            cpuThreads.emplace_back(cpuWorker, i);
         }
     }
 

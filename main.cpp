@@ -158,7 +158,7 @@ vector<string> process_instructions(int cpuBurst) {
     for (int i = 0; i < cpuBurst; ++i) {
         int cmd = cmdDistrib(gen);
         stringstream ss;
-        
+
         if (cmd == 1 || varNames.empty()) {
             // DECLARE
             string var = "v" + to_string(varNames.size());
@@ -193,7 +193,8 @@ vector<string> process_instructions(int cpuBurst) {
             if (!varNames.empty()) {
                 string var = varNames[gen() % varNames.size()];
                 ss << "FOR " << var << " 3";
-            } else {
+            }
+            else {
                 string var = "v" + to_string(varNames.size());
                 uint16_t val = valDistrib(gen);
                 declaredVars[var] = val;
@@ -205,10 +206,12 @@ vector<string> process_instructions(int cpuBurst) {
         instructions.push_back(ss.str());
     }
     return instructions;
-}  
+}
 
-void instructions_manager(int currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName) {
+void instructions_manager(int currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) { //append core and time and date
     if (currentLine >= instructions.size()) return;
+
+    string prefix = "(" + generateTimestamp() + ") Core: " + to_string(coreId) + " ";
 
     stringstream ss(instructions[currentLine]);
     string command;
@@ -219,13 +222,13 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
         uint16_t val;
         ss >> var >> val;
         memory[var] = val;
-        instructions[currentLine] = "DECLARE " + var + " = " + to_string(val);
+        instructions[currentLine] = prefix + "\"DECLARE " + var + " = " + to_string(val) + "\"";
     }
     else if (command == "PRINT") {
         string var;
         ss >> var;
         uint16_t val = memory.count(var) ? memory[var] : 0;
-        instructions[currentLine] = "PRINT " + var + " = " + to_string(val);
+        instructions[currentLine] = prefix + "\"PRINT " + var + " = " + to_string(val) + "\"";
     }
     else if (command == "ADD") {
         string a, b;
@@ -235,7 +238,7 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
         uint16_t result = clampUint16(valA + valB);
         string resultVar = "res" + to_string(currentLine); // Optional: unique result var
         memory[resultVar] = result;
-        instructions[currentLine] = "ADD " + a + "(" + to_string(valA) + ") + " + b + "(" + to_string(valB) + ") = " + to_string(result);
+        instructions[currentLine] = prefix + "\"ADD " + a + "(" + to_string(valA) + ") + " + b + "(" + to_string(valB) + ") = " + to_string(result) + "\"";
     }
     else if (command == "SUBTRACT") {
         string a, b;
@@ -245,13 +248,13 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
         uint16_t result = clampUint16(valA - valB);
         string resultVar = "res" + to_string(currentLine);
         memory[resultVar] = result;
-        instructions[currentLine] = "SUBTRACT " + a + "(" + to_string(valA) + ") - " + b + "(" + to_string(valB) + ") = " + to_string(result);
+        instructions[currentLine] = prefix + "\"SUBTRACT " + a + "(" + to_string(valA) + ") - " + b + "(" + to_string(valB) + ") = " + to_string(result) + "\"";
     }
     else if (command == "SLEEP") {
         int ms = 100;
         ss >> ms;
         this_thread::sleep_for(chrono::milliseconds(ms));
-        instructions[currentLine] = "SLEPT for " + to_string(ms) + "ms";
+        instructions[currentLine] = prefix + "\"SLEPT for " + to_string(ms) + "ms\"";
     }
     else if (command == "FOR") {
         string var;
@@ -268,10 +271,10 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
             memory[var]++;
             log << "[" << i + 1 << "]=" << memory[var] << " ";
         }
-        instructions[currentLine] = log.str();
+        instructions[currentLine] = prefix + "\"" + log.str() + "\"";//problems may occur ehre
     }
     else {
-        instructions[currentLine] = "UNKNOWN INSTRUCTION: " + command;
+        instructions[currentLine] = prefix + "\"UNKNOWN INSTRUCTION: " + command + "\"";//problems may occur ehre
     }
 }
 
@@ -293,28 +296,19 @@ void printProcessDetails(const Process& proc) {
     cout << "ID: " << proc.id << endl;
     cout << "Instruction: " << proc.currentLine << " of " << proc.totalLine << endl;
     cout << "Created: " << proc.timestamp << endl;
-    // COMMENTED OUT SINCE NOT SURE OF SPECS IF INCLUDED
-    if (proc.instructions.size() == 1) {
-        stringstream ss(proc.instructions[0]);
-        string token;
-        while (getline(ss, token, '-')) {
-            if (!token.empty()) {
-                cout << "  - " << token << endl;
-            }
-        }
-    } else {
-        for (const string& ins : proc.instructions) {
-            cout << "  - " << ins << endl;
-        }
+
+    // Print only finished instructions
+    for (int i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
+        cout << "  - " << proc.instructions[i] << endl;
     }
-    
+
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";
 }
 
 void displayProcess(const Process& proc) {
-    printProcessDetails(proc);
+    //printProcessDetails(proc);
     string subCommand;
     while (true) {
         cout << "Enter a command: ";
@@ -325,9 +319,10 @@ void displayProcess(const Process& proc) {
             printProcessDetails(proc);
         }
         else if (subCommand == "process-smi") {
-             cout << "\nprocess_name: " << proc.name << endl;
+            cout << "\nprocess_name: " << proc.name << endl;
             cout << "ID: " << proc.coreAssigned << endl;
             cout << "Logs:\n(" << proc.timestamp << ") Core: " << proc.coreAssigned << endl;
+            printProcessDetails(proc);
             cout << "\nCurrent instruction line " << proc.currentLine << endl;
             cout << "Lines of code: " << proc.totalLine << endl;
             if (proc.isFinished) {
@@ -363,7 +358,7 @@ public:
             false,
             "",
             instruction
-        });
+            });
     }
 
     Process* retrieveProcess(const string& name) {
@@ -404,7 +399,7 @@ void cpuWorker(int coreId) {
         {
             unique_lock<mutex> lock(queueMutex);
             cv.wait(lock, [] { return (!fcfsQueue.empty() || !rrQueue.empty()) || stopScheduler; });
-            
+
             if (GLOBAL_CONFIG.scheduler == "fcfs" && !fcfsQueue.empty()) {
                 proc = fcfsQueue.front();
                 fcfsQueue.pop();
@@ -417,10 +412,10 @@ void cpuWorker(int coreId) {
 
         if (proc) {
             proc->coreAssigned = coreId;
-            
+
             if (GLOBAL_CONFIG.scheduler == "fcfs") {
                 while (proc->currentLine < proc->totalLine && !stopScheduler) {
-                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name);
+                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name, coreId);
                     proc->currentLine++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
                 }
@@ -428,10 +423,10 @@ void cpuWorker(int coreId) {
             }
             else if (GLOBAL_CONFIG.scheduler == "rr") {
                 int executedInstructions = 0;
-                while (proc->currentLine < proc->totalLine && 
-                    executedInstructions < GLOBAL_CONFIG.quantumCycles && 
+                while (proc->currentLine < proc->totalLine &&
+                    executedInstructions < GLOBAL_CONFIG.quantumCycles &&
                     !stopScheduler) {
-                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name);
+                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name, coreId);
                     proc->currentLine++;
                     executedInstructions++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
@@ -466,7 +461,8 @@ void handleScreenCommand(const string& command, ProcessManager& manager) {
             lock_guard<mutex> lock(queueMutex);
             if (GLOBAL_CONFIG.scheduler == "fcfs") {
                 fcfsQueue.push(proc);
-            } else if (GLOBAL_CONFIG.scheduler == "rr") {
+            }
+            else if (GLOBAL_CONFIG.scheduler == "rr") {
                 rrQueue.push(proc);
             }
             displayProcess(*proc);
@@ -494,7 +490,7 @@ void scheduler_start(ProcessManager& manager) {
     int processCountName = 1;
     while (!stopScheduler) {
         // Interruptible sleep/frequency
-        for (int frequency = 0; frequency < 30 && !stopScheduler; ++frequency) {
+        for (int frequency = 0; frequency < 10 && !stopScheduler; ++frequency) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
         if (stopScheduler) break;
@@ -509,7 +505,8 @@ void scheduler_start(ProcessManager& manager) {
                     lock_guard<mutex> lock(queueMutex);
                     if (GLOBAL_CONFIG.scheduler == "fcfs") {
                         fcfsQueue.push(proc);
-                    } else if (GLOBAL_CONFIG.scheduler == "rr") {
+                    }
+                    else if (GLOBAL_CONFIG.scheduler == "rr") {
                         rrQueue.push(proc);
                     }
                 }
@@ -554,33 +551,35 @@ int main() {
                 cout << "--------------------------------------------\n";
 
                 // Stop old threads if already initialized
-            if (confirmInitialize) {
-                cout << "Reinitializing system...\n";
-                stopScheduler = true;
-                cv.notify_all();
-                for (auto& t : cpuThreads) {
-                    if (t.joinable()) t.join();
+                if (confirmInitialize) {
+                    cout << "Reinitializing system...\n";
+                    stopScheduler = true;
+                    cv.notify_all();
+                    for (auto& t : cpuThreads) {
+                        if (t.joinable()) t.join();
+                    }
+                    cpuThreads.clear();  // Important: clear thread list
+                    stopScheduler = false;
                 }
-                cpuThreads.clear();  // Important: clear thread list
-                stopScheduler = false;
+
+                // Start new CPU threads based on updated config
+                for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
+                    cpuThreads.emplace_back(cpuWorker, i + 1);
+                }
+
+                confirmInitialize = true;
+                cout << "System config loaded and CPU threads restarted.\n";
+
             }
-
-            // Start new CPU threads based on updated config
-            for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
-                cpuThreads.emplace_back(cpuWorker, i + 1);
-            }
-
-            confirmInitialize = true;
-            cout << "System config loaded and CPU threads restarted.\n";
-
-            } else {
+            else {
                 cout << " Failed to load system configuration.\n";
             }
         }
         else if (command.rfind("screen", 0) == 0) {
             if (confirmInitialize) {
                 handleScreenCommand(command, manager);
-            } else {
+            }
+            else {
                 cout << "Please initialize first.\n";
             }
         }
@@ -592,7 +591,8 @@ int main() {
             if (!schedulerRunning) {
                 schedulerRunning = true;
                 scheduler_start_thread = thread(scheduler_start, ref(manager));
-            } else {
+            }
+            else {
                 cout << "Scheduler is already running!\n";
             }
         }
@@ -604,7 +604,8 @@ int main() {
                 cv.notify_all();
                 scheduler_start_thread.join();
                 stopScheduler = false;
-            } else {
+            }
+            else {
                 cout << "Scheduler is not running.\n";
             }
         }

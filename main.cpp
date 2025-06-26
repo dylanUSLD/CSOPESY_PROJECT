@@ -251,7 +251,7 @@ void instructions_manager(int currentLine, vector<string>& instructions, unorder
         int ms = 100;
         ss >> ms;
         this_thread::sleep_for(chrono::milliseconds(ms));
-        instructions[currentLine] = "SLEEPED for " + to_string(ms) + "ms";
+        instructions[currentLine] = "SLEPT for " + to_string(ms) + "ms";
     }
     else if (command == "FOR") {
         string var;
@@ -538,7 +538,7 @@ int main() {
 
     if (confirmInitialize) {
         for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
-            cpuThreads.emplace_back(cpuWorker, i);
+            cpuThreads.emplace_back(cpuWorker, i+1);
         }
     }
 

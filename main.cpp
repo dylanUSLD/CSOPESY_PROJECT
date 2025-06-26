@@ -525,7 +525,6 @@ int main() {
     printHeader();
 
     vector<thread> cpuThreads;
-
     bool confirmInitialize = false;
     string command;
 
@@ -541,60 +540,52 @@ int main() {
                 cout << "- scheduler:          " << GLOBAL_CONFIG.scheduler << "\n";
                 cout << "- quantum-cycles:     " << GLOBAL_CONFIG.quantumCycles << "\n";
                 cout << "- batch-process-freq: " << GLOBAL_CONFIG.batchProcessFreq << "\n";
-                cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";//event for min ins larger than max ins
+                cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";
                 cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
                 cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << " ms\n";
                 cout << "--------------------------------------------\n";
-                confirmInitialize = true;
-                break;
-            }
-            else {
+
+                if (!confirmInitialize) {
+                    for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
+                        cpuThreads.emplace_back(cpuWorker, i+1);
+                    }
+                    confirmInitialize = true;
+                } else {
+                    cout << "System config reloaded.\n";
+                }
+            } else {
                 cout << " Failed to load system configuration.\n";
             }
-
         }
-        else if (command == "exit") {
-            cout << "exit command recognized. Exiting CSOPESY command line." << endl;
-            break;
-        }
-        else {
-            cout << "Unknown command." << endl;
-        }
-    }
-
-    if (confirmInitialize) {
-        for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
-            cpuThreads.emplace_back(cpuWorker, i+1);
-        }
-    }
-
-    while (true && confirmInitialize == true) {
-        cout << "Enter a command: ";
-        getline(cin, command);
-
-        if (command.rfind("screen", 0) == 0) {
-            handleScreenCommand(command, manager);
+        else if (command.rfind("screen", 0) == 0) {
+            if (confirmInitialize) {
+                handleScreenCommand(command, manager);
+            } else {
+                cout << "Please initialize first.\n";
+            }
         }
         else if (command == "scheduler-start") {
+            if (!confirmInitialize) {
+                cout << "Please initialize first.\n";
+                continue;
+            }
             if (!schedulerRunning) {
                 schedulerRunning = true;
                 scheduler_start_thread = thread(scheduler_start, ref(manager));
-            }
-            else {
-                cout << "Scheduler is already running!" << endl;
+            } else {
+                cout << "Scheduler is already running!\n";
             }
         }
         else if (command == "scheduler-stop") {
-            cout << "scheduler-stop command recognized. Doing something." << endl;
             if (schedulerRunning) {
+                cout << "Stopping scheduler...\n";
                 stopScheduler = true;
                 schedulerRunning = false;
                 cv.notify_all();
                 scheduler_start_thread.join();
                 stopScheduler = false;
-            }
-            else {
-                cout << "Scheduler is not running." << endl;
+            } else {
+                cout << "Scheduler is not running.\n";
             }
         }
         else if (command == "clear") {
@@ -602,31 +593,17 @@ int main() {
             printHeader();
         }
         else if (command == "exit") {
-            cout << "exit command recognized. Exiting CSOPESY command line." << endl;
+            cout << "Exiting CSOPESY command line.\n";
             break;
         }
-        else if (command.rfind("print ", 0) == 0) {
-            string procName = command.substr(6);
-            Process* proc = manager.retrieveProcess(procName);
-            if (proc) {
-                {
-                    lock_guard<mutex> lock(queueMutex);
-                    fcfsQueue.push(proc);
-                }
-                cv.notify_one();
-            }
-            else {
-                cout << "Process " << procName << " not found." << endl;
-            }
-        }
         else {
-            cout << "Unknown command." << endl;
+            cout << "Unknown command.\n";
         }
     }
+
     stopScheduler = true;
     cv.notify_all();
     for (auto& t : cpuThreads) t.join();
-
 
     return 0;
 }

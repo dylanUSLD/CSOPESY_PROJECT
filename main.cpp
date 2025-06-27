@@ -458,7 +458,6 @@ void cpuWorker(int coreId) {
                     continue;
                 }
             }
-
             proc->isFinished = true;
             proc->finishedTime = generateTimestamp();
         }

@@ -346,11 +346,12 @@ void displayProcess(const Process& proc) {
             cout << "\nCurrent instruction line " << proc.currentLine << endl;
             cout << "Lines of code: " << proc.totalLine << endl;
             // Print only finished instructions
-            for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
-                cout << "  - " << proc.instructions[i] << endl;
+            if (!proc.isFinished) {
+                for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
+                    cout << "  - " << proc.instructions[i] << endl;
+                }
             }
-
-            if (proc.isFinished) {
+            else {
                 cout << "\nStatus: finished\n";
             }
             cout << endl;
@@ -704,6 +705,7 @@ int main() {
                 stopProcessCreation = false;
                 schedulerRunning = true;
                 scheduler_start_thread = thread(scheduler_start, ref(manager));
+                cout << "Scheduler is running!\n";
             }
             else {
                 cout << "Scheduler is already running!\n";

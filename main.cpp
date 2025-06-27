@@ -391,24 +391,49 @@ public:
     }
 
     void listProcesses() {
-        cout << "-----------------------------\n";
-        cout << "Running processes:\n";
-        for (const auto& [name, proc] : processes) {
-            if (!proc->isFinished && proc->coreAssigned != -1) {
-                cout << name << " (" << proc->timestamp << ") "
-                    << "Core: " << proc->coreAssigned << " "
-                    << proc->currentLine << " / " << proc->totalLine << endl;
-            }
+    cout << "-----------------------------\n";
+
+    // Track cores being used
+    unordered_set<int> coresUsedSet;
+    for (const auto& [name, proc] : processes) {
+        if (!proc->isFinished && proc->coreAssigned != -1) {
+            coresUsedSet.insert(proc->coreAssigned);
         }
-        cout << "\nFinished processes:\n";
-        for (const auto& [name, proc] : processes) {
-            if (proc->isFinished) {
-                cout << name << " (" << proc->finishedTime << ") Finished "
-                    << proc->totalLine << " / " << proc->totalLine << endl;
-            }
-        }
-        cout << "-----------------------------\n";
     }
+
+    int coresAvailable = GLOBAL_CONFIG.numCPU;
+    int coresUsed = static_cast<int>(coresUsedSet.size());
+    double utilization = (coresAvailable > 0) ? (static_cast<double>(coresUsed) / coresAvailable) * 100.0 : 0.0;
+    coresAvailable = coresAvailable - coresUsed;
+
+    // Display core usage stats
+    cout << fixed << setprecision(2);
+    cout << "CPU Utilization: " << utilization << "%\n";
+    cout << "Cores Used:      " << coresUsed << "\n";
+    cout << "Cores Available: " << coresAvailable << "\n";
+    cout << "-----------------------------\n";
+
+    // Running processes
+    cout << "Running processes:\n";
+    for (const auto& [name, proc] : processes) {
+        if (!proc->isFinished && proc->coreAssigned != -1) {
+            cout << name << " (" << proc->timestamp << ") "
+                << "Core: " << proc->coreAssigned << " "
+                << proc->currentLine << " / " << proc->totalLine << endl;
+        }
+    }
+
+    // Finished processes
+    cout << "\nFinished processes:\n";
+    for (const auto& [name, proc] : processes) {
+        if (proc->isFinished) {
+            cout << name << " (" << proc->finishedTime << ") Finished "
+                << proc->totalLine << " / " << proc->totalLine << endl;
+        }
+    }
+
+    cout << "-----------------------------\n";
+}
 };
 
 queue<Process*> fcfsQueue;

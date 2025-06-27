@@ -418,9 +418,9 @@ public:
     cout << "Running processes:\n";
     for (const auto& [name, proc] : processes) {
         if (!proc->isFinished && proc->coreAssigned != -1) {
-            cout << name << " (" << proc->timestamp << ") "
-                << "Core: " << proc->coreAssigned << " "
-                << proc->currentLine << " / " << proc->totalLine << endl;
+            cout << name << "\033[33m  (" << proc->timestamp << ") \033[0m"
+                << "Core: " << proc->coreAssigned << " \033[33m"
+                << proc->currentLine << " / " << proc->totalLine << "\033[0m"<< endl;
         }
     }
 

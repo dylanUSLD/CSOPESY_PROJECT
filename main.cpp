@@ -22,7 +22,7 @@ uint8_t clampCPUs(int value) {
 }
 
 uint64_t clampUint32Range(uint64_t value) {
-    return max<uint64_t>(1, min(value, 4294967296ULL));
+    return static_cast<uint64_t>(max<int64_t>(1, min<int64_t>(value, 4294967296ULL)));
 }
 
 uint64_t clampDelayPerExec(uint64_t value) {
@@ -75,22 +75,22 @@ bool loadSystemConfig(const string& filename = "config.txt") {
             GLOBAL_CONFIG.scheduler = value;
         }
         else if (key == "quantum-cycles") {
-            uint64_t value;
+            int64_t value;
             file >> value;
             GLOBAL_CONFIG.quantumCycles = clampUint32Range(value);
         }
         else if (key == "batch-process-freq") {
-            uint64_t value;
+            int64_t value;
             file >> value;
             GLOBAL_CONFIG.batchProcessFreq = clampUint32Range(value);
         }
         else if (key == "min-ins") {
-            uint64_t value;
+            int64_t value;
             file >> value;
             GLOBAL_CONFIG.minInstructions = clampUint32Range(value);
         }
         else if (key == "max-ins") {
-            uint64_t value;
+            int64_t value;
             file >> value;
             GLOBAL_CONFIG.maxInstructions = clampUint32Range(value);
         }
@@ -322,18 +322,13 @@ void printProcessDetails(const Process& proc) {
     cout << "Instruction: " << proc.currentLine << " of " << proc.totalLine << endl;
     cout << "Created: " << proc.timestamp << endl;
 
-    // Print only finished instructions
-    for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
-        cout << "  - " << proc.instructions[i] << endl;
-    }
-
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";
 }
 
 void displayProcess(const Process& proc) {
-    //printProcessDetails(proc);
+    printProcessDetails(proc);
     string subCommand;
     while (true) {
         cout << "Enter a command: ";
@@ -345,11 +340,15 @@ void displayProcess(const Process& proc) {
         }
         else if (subCommand == "process-smi") {
             cout << "\nprocess_name: " << proc.name << endl;
-            cout << "ID: " << proc.coreAssigned << endl;
+            cout << "ID: " << proc.id << endl;
             cout << "Logs:\n(" << proc.timestamp << ") Core: " << proc.coreAssigned << endl;
-            printProcessDetails(proc);
             cout << "\nCurrent instruction line " << proc.currentLine << endl;
             cout << "Lines of code: " << proc.totalLine << endl;
+            // Print only finished instructions
+            for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
+                cout << "  - " << proc.instructions[i] << endl;
+            }
+
             if (proc.isFinished) {
                 cout << "\nStatus: finished\n";
             }

@@ -648,7 +648,7 @@ int main() {
                 cout << "- batch-process-freq: " << GLOBAL_CONFIG.batchProcessFreq << "\n";
                 cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";
                 cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
-                cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << " ms\n";
+                cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << "\n";
                 cout << "--------------------------------------------\n";
 
                 // Stop old threads if already initialized

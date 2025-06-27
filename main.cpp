@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <string>
 #include <sstream>
 #include <unordered_map>
@@ -25,11 +25,11 @@ uint16_t clampUint16(int value) {
 struct SystemConfig {
     int numCPU = -1;                     // Sentinel: -1 means "not set"
     string scheduler = "";               // Empty string = "not set"
-    uint32_t quantumCycles = 0;          // 0 = "not set"
-    uint32_t batchProcessFreq = 0;
+    uint64_t quantumCycles = 0;          // 0 = "not set"
+    uint64_t batchProcessFreq = 0;
     uint64_t minInstructions = 0;
     uint64_t maxInstructions = 0;
-    uint32_t delayPerExec = 0;
+    uint64_t delayPerExec = 0;
 };
 
 // Declare the global instance
@@ -63,12 +63,12 @@ bool loadSystemConfig(const string& filename = "config.txt") {
             GLOBAL_CONFIG.scheduler = value;
         }
         else if (key == "quantum-cycles") {
-            uint32_t value;
+            uint64_t value;
             file >> value;
             GLOBAL_CONFIG.quantumCycles = value;
         }
         else if (key == "batch-process-freq") {
-            uint32_t value;
+            uint64_t value;
             file >> value;
             GLOBAL_CONFIG.batchProcessFreq = value;
         }
@@ -83,7 +83,7 @@ bool loadSystemConfig(const string& filename = "config.txt") {
             GLOBAL_CONFIG.maxInstructions = value;
         }
         else if (key == "delay-per-exec") {
-            uint32_t value;
+            uint64_t value;
             file >> value;
             GLOBAL_CONFIG.delayPerExec = value;
         }
@@ -311,19 +311,17 @@ void printProcessDetails(const Process& proc) {
     cout << "Created: " << proc.timestamp << endl;
 
     // Print only finished instructions
-    /*
     for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
         cout << "  - " << proc.instructions[i] << endl;
     }
-    */
+
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";
 }
 
-
 void displayProcess(const Process& proc) {
-    printProcessDetails(proc);
+    //printProcessDetails(proc);
     string subCommand;
     while (true) {
         cout << "Enter a command: ";
@@ -337,10 +335,7 @@ void displayProcess(const Process& proc) {
             cout << "\nprocess_name: " << proc.name << endl;
             cout << "ID: " << proc.coreAssigned << endl;
             cout << "Logs:\n(" << proc.timestamp << ") Core: " << proc.coreAssigned << endl;
-            // Print only finished instructions
-            for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
-                cout << "  - " << proc.instructions[i] << endl;
-            }
+            printProcessDetails(proc);
             cout << "\nCurrent instruction line " << proc.currentLine << endl;
             cout << "Lines of code: " << proc.totalLine << endl;
             if (proc.isFinished) {
@@ -508,7 +503,7 @@ void scheduler_start(ProcessManager& manager) {
     int processCountName = 1;
     while (!stopScheduler) {
         // Interruptible sleep/frequency
-        for (int frequency = 0; frequency < 30 && !stopProcessCreation; ++frequency) {
+        for (int frequency = 0; frequency < GLOBAL_CONFIG.batchProcessFreq && !stopProcessCreation; ++frequency) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
         if (stopProcessCreation) break;
@@ -620,7 +615,7 @@ int main() {
         else if (command == "scheduler-stop") {
             if (schedulerRunning) {
                 cout << "Stopping scheduler...\n";
-                
+
                 /*stopScheduler = true;
                 schedulerRunning = false;
                 cv.notify_all();

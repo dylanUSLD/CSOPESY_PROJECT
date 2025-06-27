@@ -17,6 +17,18 @@
 using namespace std;
 
 // clamp function
+uint8_t clampCPUs(int value) {
+    return static_cast<uint8_t>(max(1, min(value, 128)));
+}
+
+uint64_t clampUint32Range(uint64_t value) {
+    return max<uint64_t>(1, min(value, 4294967296ULL));
+}
+
+uint64_t clampDelayPerExec(uint64_t value) {
+    return min(value, 4294967296ULL);
+}
+
 uint16_t clampUint16(int value) {
     return static_cast<uint16_t>(max(0, min(value, 65535)));
 }
@@ -51,7 +63,7 @@ bool loadSystemConfig(const string& filename = "config.txt") {
                 cerr << "Invalid num-cpu value. Must be 1–128." << endl;
                 return false;
             }
-            GLOBAL_CONFIG.numCPU = value;
+            GLOBAL_CONFIG.numCPU = clampCPUs(value);
         }
         else if (key == "scheduler") {
             string value;
@@ -65,27 +77,27 @@ bool loadSystemConfig(const string& filename = "config.txt") {
         else if (key == "quantum-cycles") {
             uint64_t value;
             file >> value;
-            GLOBAL_CONFIG.quantumCycles = value;
+            GLOBAL_CONFIG.quantumCycles = clampUint32Range(value);
         }
         else if (key == "batch-process-freq") {
             uint64_t value;
             file >> value;
-            GLOBAL_CONFIG.batchProcessFreq = value;
+            GLOBAL_CONFIG.batchProcessFreq = clampUint32Range(value);
         }
         else if (key == "min-ins") {
             uint64_t value;
             file >> value;
-            GLOBAL_CONFIG.minInstructions = value;
+            GLOBAL_CONFIG.minInstructions = clampUint32Range(value);
         }
         else if (key == "max-ins") {
             uint64_t value;
             file >> value;
-            GLOBAL_CONFIG.maxInstructions = value;
+            GLOBAL_CONFIG.maxInstructions = clampUint32Range(value);
         }
         else if (key == "delay-per-exec") {
             uint64_t value;
             file >> value;
-            GLOBAL_CONFIG.delayPerExec = value;
+            GLOBAL_CONFIG.delayPerExec = clampDelayPerExec(value);
         }
         else {
             cerr << "Unknown config key: " << key << endl;

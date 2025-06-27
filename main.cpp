@@ -392,49 +392,99 @@ public:
     }
 
     void listProcesses() {
-    cout << "-----------------------------\n";
+        cout << "-----------------------------\n";
 
-    // Track cores being used
-    unordered_set<int> coresUsedSet;
-    for (const auto& [name, proc] : processes) {
-        if (!proc->isFinished && proc->coreAssigned != -1) {
-            coresUsedSet.insert(proc->coreAssigned);
+        // Track cores being used
+        unordered_set<int> coresUsedSet;
+        for (const auto& [name, proc] : processes) {
+            if (!proc->isFinished && proc->coreAssigned != -1) {
+                coresUsedSet.insert(proc->coreAssigned);
+            }
         }
+
+        int coresAvailable = GLOBAL_CONFIG.numCPU;
+        int coresUsed = static_cast<int>(coresUsedSet.size());
+        double utilization = (coresAvailable > 0) ? (static_cast<double>(coresUsed) / coresAvailable) * 100.0 : 0.0;
+        coresAvailable = coresAvailable - coresUsed;
+
+        // Display core usage stats
+        cout << fixed << setprecision(2);
+        cout << "CPU Utilization: " << utilization << "%\n";
+        cout << "Cores Used:      " << coresUsed << "\n";
+        cout << "Cores Available: " << coresAvailable << "\n";
+        cout << "-----------------------------\n";
+
+        // Running processes
+        cout << "Running processes:\n";
+        for (const auto& [name, proc] : processes) {
+            if (!proc->isFinished && proc->coreAssigned != -1) {
+                cout << name << "\033[33m  (" << proc->timestamp << ") \033[0m"
+                    << "Core: " << proc->coreAssigned << " \033[33m"
+                    << proc->currentLine << " / " << proc->totalLine << "\033[0m" << endl;
+            }
+        }
+
+        // Finished processes
+        cout << "\nFinished processes:\n";
+        for (const auto& [name, proc] : processes) {
+            if (proc->isFinished) {
+                cout << name << " (" << proc->finishedTime << ") Finished "
+                    << proc->totalLine << " / " << proc->totalLine << endl;
+            }
+        }
+
+        cout << "-----------------------------\n";
     }
 
-    int coresAvailable = GLOBAL_CONFIG.numCPU;
-    int coresUsed = static_cast<int>(coresUsedSet.size());
-    double utilization = (coresAvailable > 0) ? (static_cast<double>(coresUsed) / coresAvailable) * 100.0 : 0.0;
-    coresAvailable = coresAvailable - coresUsed;
-
-    // Display core usage stats
-    cout << fixed << setprecision(2);
-    cout << "CPU Utilization: " << utilization << "%\n";
-    cout << "Cores Used:      " << coresUsed << "\n";
-    cout << "Cores Available: " << coresAvailable << "\n";
-    cout << "-----------------------------\n";
-
-    // Running processes
-    cout << "Running processes:\n";
-    for (const auto& [name, proc] : processes) {
-        if (!proc->isFinished && proc->coreAssigned != -1) {
-            cout << name << "\033[33m  (" << proc->timestamp << ") \033[0m"
-                << "Core: " << proc->coreAssigned << " \033[33m"
-                << proc->currentLine << " / " << proc->totalLine << "\033[0m"<< endl;
+    void logProcesses(const string& filename) {
+        ofstream logFile(filename);
+        if (!logFile.is_open()) {
+            cerr << "Failed to create log file: " << filename << endl;
+            return;
         }
+
+        logFile << "-----------------------------\n";
+
+        unordered_set<int> coresUsedSet;
+        for (const auto& [name, proc] : processes) {
+            if (!proc->isFinished && proc->coreAssigned != -1) {
+                coresUsedSet.insert(proc->coreAssigned);
+            }
+        }
+
+        int coresAvailable = GLOBAL_CONFIG.numCPU;
+        int coresUsed = static_cast<int>(coresUsedSet.size());
+        double utilization = (coresAvailable > 0) ? (static_cast<double>(coresUsed) / coresAvailable) * 100.0 : 0.0;
+        coresAvailable = coresAvailable - coresUsed;
+
+        logFile << fixed << setprecision(2);
+        logFile << "CPU Utilization: " << utilization << "%\n";
+        logFile << "Cores Used:      " << coresUsed << "\n";
+        logFile << "Cores Available: " << coresAvailable << "\n";
+        logFile << "-----------------------------\n";
+
+        logFile << "Running processes:\n";
+        for (const auto& [name, proc] : processes) {
+            if (!proc->isFinished && proc->coreAssigned != -1) {
+                logFile << name << " (" << proc->timestamp << ") "
+                    << "Core: " << proc->coreAssigned << " "
+                    << proc->currentLine << " / " << proc->totalLine << endl;
+            }
+        }
+
+        logFile << "\nFinished processes:\n";
+        for (const auto& [name, proc] : processes) {
+            if (proc->isFinished) {
+                logFile << name << " (" << proc->finishedTime << ") Finished "
+                    << proc->totalLine << " / " << proc->totalLine << endl;
+            }
+        }
+
+        logFile << "-----------------------------\n";
+        logFile.close();
+        cout << "Report saved to csopesy-log.txt\n";
     }
 
-    // Finished processes
-    cout << "\nFinished processes:\n";
-    for (const auto& [name, proc] : processes) {
-        if (proc->isFinished) {
-            cout << name << " (" << proc->finishedTime << ") Finished "
-                << proc->totalLine << " / " << proc->totalLine << endl;
-        }
-    }
-
-    cout << "-----------------------------\n";
-}
 };
 
 queue<Process*> fcfsQueue;
@@ -633,6 +683,16 @@ int main() {
             }
             else {
                 cout << "Please initialize first.\n";
+            }
+        }
+        else if (command == "report-util") {
+            //Create csopesy-log.txt
+            //Save in the text file the same printed outputs listProcess function
+            if (!confirmInitialize) {
+                cout << "Please initialize first.\n";
+            }
+            else {
+                manager.logProcesses("csopesy-log.txt");
             }
         }
         else if (command == "scheduler-start") {

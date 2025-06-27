@@ -734,6 +734,17 @@ int main() {
             printHeader();
         }
         else if (command == "exit") {
+
+            if (schedulerRunning) {
+                cout << "Stopping scheduler...\n";
+
+                stopProcessCreation = true;
+                schedulerRunning = false;
+                if (scheduler_start_thread.joinable()) {
+                    scheduler_start_thread.join();
+                }
+            }
+
             cout << "Exiting CSOPESY command line.\n";
             break;
         }

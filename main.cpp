@@ -311,17 +311,19 @@ void printProcessDetails(const Process& proc) {
     cout << "Created: " << proc.timestamp << endl;
 
     // Print only finished instructions
+    /*
     for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
         cout << "  - " << proc.instructions[i] << endl;
     }
-
+    */
     cout << "\033[33m";
     cout << "Type 'exit' to quit, 'clear' to clear the screen" << endl;
     cout << "\033[0m";
 }
 
+
 void displayProcess(const Process& proc) {
-    //printProcessDetails(proc);
+    printProcessDetails(proc);
     string subCommand;
     while (true) {
         cout << "Enter a command: ";
@@ -335,7 +337,10 @@ void displayProcess(const Process& proc) {
             cout << "\nprocess_name: " << proc.name << endl;
             cout << "ID: " << proc.coreAssigned << endl;
             cout << "Logs:\n(" << proc.timestamp << ") Core: " << proc.coreAssigned << endl;
-            printProcessDetails(proc);
+            // Print only finished instructions
+            for (uint64_t i = 0; i < proc.currentLine && i < proc.instructions.size(); ++i) {
+                cout << "  - " << proc.instructions[i] << endl;
+            }
             cout << "\nCurrent instruction line " << proc.currentLine << endl;
             cout << "Lines of code: " << proc.totalLine << endl;
             if (proc.isFinished) {

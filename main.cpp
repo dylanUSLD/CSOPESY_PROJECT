@@ -43,6 +43,10 @@ struct SystemConfig {
     uint64_t minInstructions = 0;
     uint64_t maxInstructions = 0;
     uint64_t delayPerExec = 0;
+    uint64_t maxOverallMem = 0;
+    uint64_t memPerFrame = 0;
+    uint64_t memPerProc = 0;
+    
 };
 
 // Declare the global instance
@@ -99,6 +103,21 @@ bool loadSystemConfig(const string& filename = "config.txt") {
             uint64_t value;
             file >> value;
             GLOBAL_CONFIG.delayPerExec = clampDelayPerExec(value);
+        }
+        else if (key == "max-overall-mem") {
+            int64_t value;
+            file >> value;
+            GLOBAL_CONFIG.maxOverallMem = clampUint32Range(value);
+        }
+        else if (key == "mem-per-frame") {
+            int64_t value;
+            file >> value;
+            GLOBAL_CONFIG.memPerFrame = clampUint32Range(value);
+        }
+        else if (key == "mem-per-proc") {
+            int64_t value;
+            file >> value;
+            GLOBAL_CONFIG.memPerProc = clampUint32Range(value);
         }
         else {
             cerr << "Unknown config key: " << key << endl;
@@ -649,6 +668,9 @@ int main() {
                 cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";
                 cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
                 cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << "\n";
+                cout << "- max-overall-mem:    " << GLOBAL_CONFIG.maxOverallMem << "\n";
+                cout << "- mem-per-frame:      " << GLOBAL_CONFIG.memPerFrame << "\n";
+                cout << "- mem-per-proc:       " << GLOBAL_CONFIG.memPerProc << "\n";
                 cout << "--------------------------------------------\n";
 
                 // Stop old threads if already initialized

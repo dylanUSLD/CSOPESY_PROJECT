@@ -505,6 +505,29 @@ public:
         cout << "Report saved to csopesy-log.txt\n";
     }
 
+    void logMemoryAllocation(const string& filename) {
+        ofstream logFile(filename);
+        if (!logFile.is_open()) {
+            cerr << "Failed to create log file: " << filename << endl;
+            return;
+        }
+
+        logFile << "-----------------------------\n";
+
+        int maxMemory = GLOBAL_CONFIG.maxOverallMem;
+
+        logFile << fixed << setprecision(2);
+        logFile << "Timestamp:  ( / /  : : AM ) Finished " << "%\n";
+        logFile << "Number of processes in memory: " << "\n";
+        logFile << "Total external fragmentation in KB: " << "\n\n";
+        logFile << "-----------End------------------ = " << maxMemory << "\n";
+
+
+        logFile << "-----------Start------------------ = 0\n";
+        logFile.close();
+        cout << "Report saved to memory_stamp_<qq>.txt\n";
+    }
+
 };
 
 queue<Process*> fcfsQueue;
@@ -716,6 +739,14 @@ int main() {
             }
             else {
                 manager.logProcesses("csopesy-log.txt");
+            }
+        }
+        else if (command == "report-memory") {
+            if (!confirmInitialize) {
+                cout << "Please initialize first.\n";
+            }
+            else {
+                manager.logMemoryAllocation("memory_stamp_<qq>.txt"); // qq = current current quantum cycle of when the memory snapshot was taken.
             }
         }
         else if (command == "scheduler-start") {

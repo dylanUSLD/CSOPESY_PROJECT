@@ -1,0 +1,7 @@
+-----------------------------
+Timestamp:  ( / /  : : AM ) Finished %
+Number of processes in memory: 
+Total external fragmentation in KB: 
+
+-----------End------------------ = 16384
+-----------Start------------------ = 0

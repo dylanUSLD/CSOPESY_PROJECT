@@ -17,6 +17,14 @@
 
 using namespace std;
 
+struct MemoryBlock {
+    bool occupied = false;
+    string processName = "";
+    int processId = -1;
+};
+
+vector<MemoryBlock> memory;
+
 // clamp function
 uint8_t clampCPUs(int value) {
     return static_cast<uint8_t>(max(1, min(value, 128)));
@@ -505,29 +513,63 @@ public:
         cout << "Report saved to csopesy-log.txt\n";
     }
 
-    void logMemoryAllocation(const string& filename) {
+    void logMemoryAllocation(int quantumCycle) {
+        string filename = "memory_stamp_" + to_string(quantumCycle) + ".txt";
         ofstream logFile(filename);
         if (!logFile.is_open()) {
             cerr << "Failed to create log file: " << filename << endl;
             return;
         }
+        logFile << "Timestamp: (" << generateTimestamp() << ")\n";
+        unordered_set<int> counted;
+        for (const auto& block : memory) {
+            if (block.occupied) counted.insert(block.processId);
+        }
+        logFile << "Number of processes in memory: " << counted.size() << "\n";
+        int externalFrag = 0;
+        int freeCount = 0;
+        for (int i = 0; i < memory.size(); ++i) {
+            if (!memory[i].occupied) {
+                freeCount++;
+            } else {
+                if (freeCount * GLOBAL_CONFIG.memPerFrame < GLOBAL_CONFIG.memPerProc && freeCount > 0) {
+                    externalFrag += freeCount * GLOBAL_CONFIG.memPerFrame;
+                }
+                freeCount = 0;
+            }
+        }
+        if (freeCount * GLOBAL_CONFIG.memPerFrame < GLOBAL_CONFIG.memPerProc && freeCount > 0) {
+            externalFrag += freeCount * GLOBAL_CONFIG.memPerFrame;
+        }
+        logFile << "Total external fragmentation in KB: " << externalFrag / 1024 << "\n\n";
+        logFile << "-----------End------------------ = " << GLOBAL_CONFIG.maxOverallMem << "\n\n";
 
-        logFile << "-----------------------------\n";
+        int last = memory.size() - 1;
+        while (last >= 0) {
+            if (memory[last].occupied) {
+                int pid = memory[last].processId;
+                string pname = memory[last].processName;
+                int end = (last + 1) * GLOBAL_CONFIG.memPerFrame;
 
-        int maxMemory = GLOBAL_CONFIG.maxOverallMem;
+                // Backtrack to start of block
+                int i = last;
+                while (i >= 0 && memory[i].occupied && memory[i].processId == pid) i--;
+                int start = (i + 1) * GLOBAL_CONFIG.memPerFrame;
 
-        logFile << fixed << setprecision(2);
-        logFile << "Timestamp:  ( / /  : : AM ) Finished " << "%\n";
-        logFile << "Number of processes in memory: " << "\n";
-        logFile << "Total external fragmentation in KB: " << "\n\n";
-        logFile << "-----------End------------------ = " << maxMemory << "\n";
+                logFile << end << "\n";
+                logFile << pname << "\n";
+                logFile << start << "\n\n";
 
+                last = i;
+            } else {
+                last--;
+            }
+        }
 
         logFile << "-----------Start------------------ = 0\n";
         logFile.close();
-        cout << "Report saved to memory_stamp_<qq>.txt\n";
+        cout << "Report saved to " << filename << "\n";
     }
-
 };
 
 queue<Process*> fcfsQueue;
@@ -537,7 +579,10 @@ condition_variable cv;
 bool stopScheduler = false;
 bool stopProcessCreation = false;
 
-void cpuWorker(int coreId) {
+int allocateMemory(const string& procName, int procId);
+void freeMemory(int procId);
+
+void cpuWorker(int coreId, ProcessManager& manager) {
     while (!stopScheduler) {
         Process* proc = nullptr;
         {
@@ -553,8 +598,16 @@ void cpuWorker(int coreId) {
                 rrQueue.pop();
             }
         }
-
         if (proc) {
+            int baseAddr = allocateMemory(proc->name, proc->id);
+            if (baseAddr == -1) {
+                {
+                    lock_guard<mutex> lock(queueMutex);
+                    rrQueue.push(proc);
+                }
+                this_thread::sleep_for(chrono::milliseconds(10));
+                continue;
+            }
             proc->coreAssigned = coreId;
 
             if (GLOBAL_CONFIG.scheduler == "fcfs") {
@@ -582,8 +635,13 @@ void cpuWorker(int coreId) {
                     cv.notify_one();
                     continue;
                 }
+                static int quantumCounter = 0;
+                quantumCounter++;
+                manager.logMemoryAllocation(quantumCounter);
+
             }
             proc->isFinished = true;
+            freeMemory(proc->id);
             proc->finishedTime = generateTimestamp();
         }
     }
@@ -664,6 +722,38 @@ void scheduler_start(ProcessManager& manager) {
     }
 }
 
+int allocateMemory(const string& procName, int procId) {
+    int framesNeeded = GLOBAL_CONFIG.memPerProc / GLOBAL_CONFIG.memPerFrame;
+    int count = 0, startIndex = -1;
+
+    for (int i = 0; i < memory.size(); ++i) {
+        if (!memory[i].occupied) {
+            if (count == 0) startIndex = i;
+            count++;
+            if (count == framesNeeded) {
+                for (int j = startIndex; j < startIndex + framesNeeded; ++j) {
+                    memory[j].occupied = true;
+                    memory[j].processName = procName;
+                    memory[j].processId = procId;
+                }
+                return startIndex * GLOBAL_CONFIG.memPerFrame;
+            }
+        } else {
+            count = 0;
+        }
+    }
+
+    return -1; 
+}
+
+void freeMemory(int procId) {
+    for (auto& block : memory) {
+        if (block.processId == procId) {
+            block = MemoryBlock(); 
+        }
+    }
+}
+
 
 int main() {
     ProcessManager manager;
@@ -712,12 +802,12 @@ int main() {
 
                 // Start new CPU threads based on updated config
                 for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
-                    cpuThreads.emplace_back(cpuWorker, i + 1);
+                    cpuThreads.emplace_back(cpuWorker, i + 1, ref(manager));
                 }
 
                 confirmInitialize = true;
                 cout << "System config loaded and CPU threads restarted.\n";
-
+                memory.resize(GLOBAL_CONFIG.maxOverallMem / GLOBAL_CONFIG.memPerFrame);
             }
             else {
                 cout << " Failed to load system configuration.\n";
@@ -746,7 +836,7 @@ int main() {
                 cout << "Please initialize first.\n";
             }
             else {
-                manager.logMemoryAllocation("memory_stamp_<qq>.txt"); // qq = current current quantum cycle of when the memory snapshot was taken.
+                manager.logMemoryAllocation(GLOBAL_CONFIG.quantumCycles); // qq = current current quantum cycle of when the memory snapshot was taken.
             }
         }
         else if (command == "scheduler-start") {

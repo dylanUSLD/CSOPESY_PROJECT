@@ -30,6 +30,16 @@ uint64_t clampDelayPerExec(uint64_t value) {
     return min(value, 4294967296ULL);
 }
 
+uint64_t clampMemPow2(uint64_t value) {
+    static const vector<uint64_t> powers = {
+        64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536
+    };
+    for (uint64_t allowed : powers) {
+        if (value == allowed) return value;
+    }
+    throw invalid_argument("Value must be a power of two between 2^6 and 2^16");
+}
+
 uint16_t clampUint16(int value) {
     return static_cast<uint16_t>(max(0, min(value, 65535)));
 }
@@ -43,6 +53,10 @@ struct SystemConfig {
     uint64_t minInstructions = 0;
     uint64_t maxInstructions = 0;
     uint64_t delayPerExec = 0;
+    uint64_t maxOverallMem = 0;
+    uint64_t memPerFrame = 0;
+    uint64_t minMemPerProc = 0;
+    uint64_t maxMemPerProc = 0;
 };
 
 // Declare the global instance
@@ -100,6 +114,26 @@ bool loadSystemConfig(const string& filename = "config.txt") {
             file >> value;
             GLOBAL_CONFIG.delayPerExec = clampDelayPerExec(value);
         }
+        else if (key == "max-overall-mem") {
+            uint64_t value;
+            file >> value;
+            GLOBAL_CONFIG.maxOverallMem = clampMemPow2(value);
+        }
+        else if (key == "mem-per-frame") {
+            uint64_t value;
+            file >> value;
+            GLOBAL_CONFIG.memPerFrame = clampMemPow2(value);
+        }
+        else if (key == "min-mem-per-proc") {
+            uint64_t value;
+            file >> value;
+            GLOBAL_CONFIG.minMemPerProc = clampMemPow2(value);
+        }
+        else if (key == "max-mem-per-proc") {
+            uint64_t value;
+            file >> value;
+            GLOBAL_CONFIG.maxMemPerProc = clampMemPow2(value);
+        }
         else {
             cerr << "Unknown config key: " << key << endl;
             return false;
@@ -109,6 +143,11 @@ bool loadSystemConfig(const string& filename = "config.txt") {
     // Final validation
     if (GLOBAL_CONFIG.minInstructions > GLOBAL_CONFIG.maxInstructions) {
         cerr << "min-ins cannot be greater than max-ins." << endl;
+        return false;
+    }
+
+    if (GLOBAL_CONFIG.minMemPerProc > GLOBAL_CONFIG.maxMemPerProc) {
+        cerr << "min-mem-per-proc cannot be greater than max-mem-per-proc." << endl;
         return false;
     }
 
@@ -154,91 +193,25 @@ uint64_t cpuBurstGenerator() {
     return distrib(gen);
 }
 
-
-vector<string> process_instructions(uint64_t cpuBurst) {
-    vector<string> instructions;
-    unordered_map<string, uint16_t> declaredVars;
-    vector<string> varNames;
-
-    random_device rd;
-    mt19937 gen(rd());
-    uniform_int_distribution<> cmdDistrib(0, 5);
-    uniform_int_distribution<> valDistrib(1, 100);
-
-    for (uint64_t i = 0; i < cpuBurst; ++i) {
-        int cmd = cmdDistrib(gen);
-        stringstream ss;
-
-        if (cmd == 1 || varNames.empty()) {
-            // DECLARE
-            string var = "v" + to_string(varNames.size());
-            uint16_t val = valDistrib(gen);
-            declaredVars[var] = val;
-            varNames.push_back(var);
-            ss << "DECLARE " << var << " " << val;
-        }
-        else if (cmd == 0 && !varNames.empty()) {
-            // PRINT
-            string var = varNames[gen() % varNames.size()];
-            ss << "PRINT " << var;
-        }
-        else if (cmd == 2 && varNames.size() >= 2) {
-            // ADD
-            string a = varNames[gen() % varNames.size()];
-            string b = varNames[gen() % varNames.size()];
-            ss << "ADD " << a << " " << b;
-        }
-        else if (cmd == 3 && varNames.size() >= 2) {
-            // SUBTRACT
-            string a = varNames[gen() % varNames.size()];
-            string b = varNames[gen() % varNames.size()];
-            ss << "SUBTRACT " << a << " " << b;
-        }
-        else if (cmd == 4) {
-            // SLEEP
-            ss << "SLEEP 100";
-        }
-        else {
-            // FOR loop
-            if (!varNames.empty()) {
-                string var = varNames[gen() % varNames.size()];
-                ss << "FOR " << var << " 3";
-            }
-            else {
-                string var = "v" + to_string(varNames.size());
-                uint16_t val = valDistrib(gen);
-                declaredVars[var] = val;
-                varNames.push_back(var);
-                ss << "DECLARE " << var << " " << val;
-            }
-        }
-
-        instructions.push_back(ss.str());
-    }
-    return instructions;
-}
-
-void instructions_manager(uint64_t currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId) {
-    // Ensure instructions has enough space to store the line
+void instructions_manager(uint64_t currentLine, vector<string>& instructions, unordered_map<string, uint16_t>& memory, const string& processName, int coreId, uint64_t processMemSize) {
     if (instructions.size() <= currentLine)
         instructions.resize(currentLine + 1);
 
     string prefix = "(" + generateTimestamp() + ") Core: " + to_string(coreId) + " ";
 
-    // Random instruction generation
     static thread_local mt19937 gen(random_device{}());
-    uniform_int_distribution<> cmdDistrib(0, 5);
+    uniform_int_distribution<> cmdDistrib(0, 7); // Extended to 8 types of commands
     uniform_int_distribution<> valDistrib(1, 100);
 
-    stringstream ss;
+    // Only generate addresses from 64 up to (64 + processMemSize - 1)
+    uint64_t maxAddr = 64 + processMemSize - 1;
+    uniform_int_distribution<uint64_t> addrDistrib(64, maxAddr);
+
     stringstream log;
     int cmd = cmdDistrib(gen);
-
-    // Track declared vars
     static thread_local vector<string> varNames;
 
     if (cmd == 1 || varNames.empty()) {
-        // DECLARE
         string var = "v" + to_string(varNames.size());
         uint16_t val = valDistrib(gen);
         memory[var] = val;
@@ -246,13 +219,11 @@ void instructions_manager(uint64_t currentLine, vector<string>& instructions, un
         log << "DECLARE " << var << " = " << val;
     }
     else if (cmd == 0 && !varNames.empty()) {
-        // PRINT
         string var = varNames[gen() % varNames.size()];
         uint16_t val = memory.count(var) ? memory[var] : 0;
         log << "PRINT " << var << " = " << val;
     }
     else if (cmd == 2 && varNames.size() >= 2) {
-        // ADD
         string a = varNames[gen() % varNames.size()];
         string b = varNames[gen() % varNames.size()];
         uint16_t valA = memory.count(a) ? memory[a] : 0;
@@ -263,7 +234,6 @@ void instructions_manager(uint64_t currentLine, vector<string>& instructions, un
         log << "ADD " << a << "(" << valA << ") + " << b << "(" << valB << ") = " << result;
     }
     else if (cmd == 3 && varNames.size() >= 2) {
-        // SUBTRACT
         string a = varNames[gen() % varNames.size()];
         string b = varNames[gen() % varNames.size()];
         uint16_t valA = memory.count(a) ? memory[a] : 0;
@@ -274,34 +244,51 @@ void instructions_manager(uint64_t currentLine, vector<string>& instructions, un
         log << "SUBTRACT " << a << "(" << valA << ") - " << b << "(" << valB << ") = " << result;
     }
     else if (cmd == 4) {
-        // SLEEP
         int ms = 100;
         this_thread::sleep_for(chrono::milliseconds(ms));
         log << "SLEPT for " << ms << "ms";
     }
-    else {
-        // FOR
-        if (varNames.empty()) {
-            string var = "v" + to_string(varNames.size());
-            uint16_t val = valDistrib(gen);
-            memory[var] = val;
-            varNames.push_back(var);
-        }
-
+    else if (cmd == 5 && !varNames.empty()) {
         string var = varNames[gen() % varNames.size()];
         int count = 3;
         if (!memory.count(var)) memory[var] = 0;
-
         log << "FOR loop on " << var << ": ";
         for (int i = 0; i < count; ++i) {
             memory[var]++;
             log << "[" << i + 1 << "]=" << memory[var] << " ";
         }
     }
+    else if (cmd == 6 && !varNames.empty()) {
+        // READ(var, hex_address)
+        string var = varNames[gen() % varNames.size()];
+        uint64_t address = addrDistrib(gen);
+        stringstream ss;
+        ss << "0x" << hex << uppercase << address;
+        string hexAddr = ss.str();
+        uint16_t val = memory.count(hexAddr) ? memory[hexAddr] : 0;
+        memory[var] = val;
+        log << "READ " << var << " <- mem[" << hexAddr << "] = " << val;
+    }
+    else if (cmd == 7) {
+        // WRITE(hex_address, value)
+        uint64_t address = addrDistrib(gen);
+        uint16_t val = valDistrib(gen);
+        stringstream ss;
+        ss << "0x" << hex << uppercase << address;
+        string hexAddr = ss.str();
+        memory[hexAddr] = val;
+        log << "WRITE mem[" << hexAddr << "] = " << val;
+    }
 
-    // Save result in instruction log
     instructions[currentLine] = prefix + "\"" + log.str() + "\"";
 }
+
+
+struct PageTableEntry {
+    int pageNumber;
+    int frameNumber; // -1 if not in memory
+    bool valid;
+};
 
 
 struct Process {
@@ -315,6 +302,8 @@ struct Process {
     string finishedTime;
     vector<string> instructions;
     unordered_map<string, uint16_t> memory;
+    uint64_t totalmemory; 
+    vector<PageTableEntry> pageTable;
 };
 
 void printProcessDetails(const Process& proc) {
@@ -366,6 +355,14 @@ class ProcessManager {
 private:
     unordered_map<string, unique_ptr<Process>> processes;
     int nextProcessID = 1;
+
+    uint64_t generateProcessMemory() {
+        random_device rd;
+        mt19937 gen(rd());
+        uniform_int_distribution<uint64_t> distrib(GLOBAL_CONFIG.minMemPerProc, GLOBAL_CONFIG.maxMemPerProc);
+        return distrib(gen);
+    }
+
 public:
     void createProcess(string name) {
         if (processes.find(name) != processes.end()) {
@@ -374,6 +371,14 @@ public:
         }
         uint64_t cpuBurst = cpuBurstGenerator();
         vector<string> instructions;
+        uint64_t memRequired = generateProcessMemory();
+        int pagesNeeded = static_cast<int>(memRequired / GLOBAL_CONFIG.memPerFrame);
+        vector<PageTableEntry> pageTable;
+
+        for (int i = 0; i < pagesNeeded; ++i) {
+            pageTable.push_back(PageTableEntry{ i, -1, false }); // not yet loaded into memory
+        }
+
         processes[name] = make_unique<Process>(Process{
             nextProcessID++,
             name,
@@ -383,7 +388,10 @@ public:
             -1,
             false,
             "",
-            instructions
+            instructions,
+            {},
+            memRequired,
+            pageTable
             });
     }
 
@@ -517,7 +525,7 @@ void cpuWorker(int coreId) {
 
             if (GLOBAL_CONFIG.scheduler == "fcfs") {
                 while (proc->currentLine < proc->totalLine && !stopScheduler) {
-                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name, coreId);
+                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name, coreId, proc->totalmemory);
                     proc->currentLine++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
                 }
@@ -528,7 +536,7 @@ void cpuWorker(int coreId) {
                 while (proc->currentLine < proc->totalLine &&
                     executedInstructions < GLOBAL_CONFIG.quantumCycles &&
                     !stopScheduler) {
-                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name, coreId);
+                    instructions_manager(proc->currentLine, proc->instructions, proc->memory, proc->name, coreId, proc->totalmemory);
                     proc->currentLine++;
                     executedInstructions++;
                     this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
@@ -649,6 +657,10 @@ int main() {
                 cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";
                 cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
                 cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << "\n";
+                cout << "- max-overall-mem:    " << GLOBAL_CONFIG.maxOverallMem << "\n";
+                cout << "- mem-per-frame:      " << GLOBAL_CONFIG.memPerFrame << "\n";
+                cout << "- min-mem-per-proc:   " << GLOBAL_CONFIG.minMemPerProc << "\n";
+                cout << "- max-mem-per-proc:   " << GLOBAL_CONFIG.maxMemPerProc << "\n";
                 cout << "--------------------------------------------\n";
 
                 // Stop old threads if already initialized

@@ -239,7 +239,9 @@ private:
     uint64_t generateProcessMemory() {
         random_device rd;
         mt19937 gen(rd());
-        uniform_int_distribution<uint64_t> distrib(GLOBAL_CONFIG.minMemPerProc, GLOBAL_CONFIG.maxMemPerProc);
+        uint64_t minRequired = max(GLOBAL_CONFIG.minMemPerProc, GLOBAL_CONFIG.memPerFrame * 2);
+        uniform_int_distribution<uint64_t> distrib(minRequired, GLOBAL_CONFIG.maxMemPerProc);
+
         return distrib(gen);
     }
 
@@ -273,6 +275,10 @@ public:
             memRequired,
             pageTable
             });
+    }
+
+    unordered_map<string, unique_ptr<Process>>& retrieveAllProcesses() {
+    return processes;
     }
 
     Process* retrieveProcess(const string& name) {
@@ -377,6 +383,12 @@ public:
 };
 
 unordered_map<string, uint16_t>& getPageData(Process& proc, uint64_t pageNum, ProcessManager& manager) {
+
+    if (pageNum >= proc.pageTable.size()) {
+    cerr << "Error: Invalid pageNum = " << pageNum << ", exceeds page table size.\n";
+    exit(1);
+    }
+
     // Check if page is valid in memory
     if (proc.pageTable[pageNum].valid) {
         int frameIdx = static_cast<int>(proc.pageTable[pageNum].frameNumber);
@@ -394,7 +406,7 @@ unordered_map<string, uint16_t>& getPageData(Process& proc, uint64_t pageNum, Pr
 
     // If not valid: handle page fault
     int victimIdx = -1;
-    for (int i = 0; i < physicalMemory.size(); ++i) {
+    for (size_t i = 0; i < physicalMemory.size(); ++i) {
         if (physicalMemory[i].data.empty()) {
             victimIdx = i; break;
         }
@@ -403,16 +415,20 @@ unordered_map<string, uint16_t>& getPageData(Process& proc, uint64_t pageNum, Pr
     if (victimIdx == -1) {
         // No free frame — use LRU replacement
         uint64_t oldest = UINT64_MAX;
-        for (int i = 0; i < physicalMemory.size(); ++i) {
+        for (size_t i = 0; i < physicalMemory.size(); ++i) {
             const Frame& f = physicalMemory[i];
-            const auto& table = proc.pageTable;
-            for (const auto& p : table) {
-                if (p.valid && p.frameNumber == i && p.lastUsed < oldest) {
-                    oldest = p.lastUsed;
-                    victimIdx = i;
+            if (!f.processName.empty()) {
+                Process* victimProc = manager.retrieveProcess(f.processName);
+                if (victimProc) {
+                    const auto& pte = victimProc->pageTable[f.pageNumber];
+                    if (pte.valid && pte.frameNumber == static_cast<int>(i) && pte.lastUsed < oldest) {
+                        oldest = pte.lastUsed;
+                        victimIdx = static_cast<int>(i);
+                    }
                 }
             }
         }
+
 
         // Save victim to backing store
         Frame& victim = physicalMemory[victimIdx];
@@ -457,8 +473,13 @@ void instructions_manager(Process* proc, int coreId, ProcessManager& manager) {
     uniform_int_distribution<> cmdDistrib(0, 7); // Extended to 8 types of commands
     uniform_int_distribution<> valDistrib(1, 100);
 
-    uint64_t maxAddr = 64 + proc->totalmemory - 1;
-    uniform_int_distribution<uint64_t> addrDistrib(64, maxAddr);
+    uint64_t lower = 64;
+    uint64_t maxValidAddr = GLOBAL_CONFIG.memPerFrame * proc->pageTable.size() - 1;
+
+    // Fix: Ensure lower does not exceed maxValidAddr
+    uint64_t upper = (maxValidAddr >= lower) ? maxValidAddr : lower;
+
+    uniform_int_distribution<uint64_t> addrDistrib(lower, upper);
 
     stringstream log;
     int cmd = cmdDistrib(gen);
@@ -590,7 +611,6 @@ void displayProcess(const Process& proc) {
 }
 
 
-
 queue<Process*> fcfsQueue;
 queue<Process*> rrQueue;
 mutex queueMutex;
@@ -599,54 +619,62 @@ bool stopScheduler = false;
 bool stopProcessCreation = false;
 
 void cpuWorker(int coreId, ProcessManager& manager) {
-    while (!stopScheduler) {
-        Process* proc = nullptr;
-        {
-            unique_lock<mutex> lock(queueMutex);
-            cv.wait(lock, [] { return (!fcfsQueue.empty() || !rrQueue.empty()) || stopScheduler; });
+    try {
+        while (!stopScheduler) {
+            Process* proc = nullptr;
+            {
+                unique_lock<mutex> lock(queueMutex);
+                cv.wait(lock, [] { return (!fcfsQueue.empty() || !rrQueue.empty()) || stopScheduler; });
 
-            if (GLOBAL_CONFIG.scheduler == "fcfs" && !fcfsQueue.empty()) {
-                proc = fcfsQueue.front();
-                fcfsQueue.pop();
+                if (GLOBAL_CONFIG.scheduler == "fcfs" && !fcfsQueue.empty()) {
+                    proc = fcfsQueue.front();
+                    fcfsQueue.pop();
+                }
+                else if (GLOBAL_CONFIG.scheduler == "rr" && !rrQueue.empty()) {
+                    proc = rrQueue.front();
+                    rrQueue.pop();
+                }
             }
-            else if (GLOBAL_CONFIG.scheduler == "rr" && !rrQueue.empty()) {
-                proc = rrQueue.front();
-                rrQueue.pop();
+
+            if (proc) {
+                proc->coreAssigned = coreId;
+
+                if (GLOBAL_CONFIG.scheduler == "fcfs") {
+                    while (proc->currentLine < proc->totalLine && !stopScheduler) {
+                        instructions_manager(proc, coreId, manager);
+                        proc->currentLine++;
+                        this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
+                    }
+
+                }
+                else if (GLOBAL_CONFIG.scheduler == "rr") {
+                    uint64_t executedInstructions = 0;
+                    while (proc->currentLine < proc->totalLine &&
+                        executedInstructions < GLOBAL_CONFIG.quantumCycles &&
+                        !stopScheduler) {
+                        instructions_manager(proc, coreId, manager);
+                        proc->currentLine++;
+                        executedInstructions++;
+                        this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
+                    }
+
+                    if (proc->currentLine < proc->totalLine) {
+                        lock_guard<mutex> lock(queueMutex);
+                        rrQueue.push(proc);
+                        cv.notify_one();
+                        continue;
+                    }
+                }
+                proc->isFinished = true;
+                proc->finishedTime = generateTimestamp();
             }
         }
-
-        if (proc) {
-            proc->coreAssigned = coreId;
-
-            if (GLOBAL_CONFIG.scheduler == "fcfs") {
-                while (proc->currentLine < proc->totalLine && !stopScheduler) {
-                    instructions_manager(proc, coreId, manager);
-                    proc->currentLine++;
-                    this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
-                }
-
-            }
-            else if (GLOBAL_CONFIG.scheduler == "rr") {
-                uint64_t executedInstructions = 0;
-                while (proc->currentLine < proc->totalLine &&
-                    executedInstructions < GLOBAL_CONFIG.quantumCycles &&
-                    !stopScheduler) {
-                    instructions_manager(proc, coreId, manager);
-                    proc->currentLine++;
-                    executedInstructions++;
-                    this_thread::sleep_for(chrono::milliseconds(GLOBAL_CONFIG.delayPerExec));
-                }
-
-                if (proc->currentLine < proc->totalLine) {
-                    lock_guard<mutex> lock(queueMutex);
-                    rrQueue.push(proc);
-                    cv.notify_one();
-                    continue;
-                }
-            }
-            proc->isFinished = true;
-            proc->finishedTime = generateTimestamp();
-        }
+    } catch (const std::exception& e) {
+        cerr << "Exception in cpuWorker " << coreId << ": " << e.what() << endl;
+        exit(1);
+    } catch (...) {
+        cerr << "Unknown exception in cpuWorker " << coreId << endl;
+        exit(1);
     }
 }
 
@@ -694,7 +722,7 @@ void scheduler_start(ProcessManager& manager) {
     int processCountName = 1;
     while (!stopScheduler) {
         // Interruptible sleep/frequency
-        for (int frequency = 0; frequency < GLOBAL_CONFIG.batchProcessFreq && !stopProcessCreation; ++frequency) {
+        for (size_t frequency = 0; frequency < GLOBAL_CONFIG.batchProcessFreq && !stopProcessCreation; ++frequency) {
             this_thread::sleep_for(chrono::milliseconds(100));
         }
         if (stopProcessCreation) break;
@@ -782,6 +810,11 @@ int main() {
 
                 physicalMemory.resize(GLOBAL_CONFIG.maxOverallMem / GLOBAL_CONFIG.memPerFrame);
 
+                if (physicalMemory.empty()) {
+                    cerr << "Error: physicalMemory is empty after resize. Check mem-per-frame.\n";
+                    exit(1);
+                }
+
             }
             else {
                 cout << " Failed to load system configuration.\n";
@@ -840,6 +873,97 @@ int main() {
                 cout << "Scheduler is not running.\n";
             }
         }
+
+        else if (command == "mem-view") {
+            cout << "\n--- Physical Memory View ---\n";
+            for (size_t i = 0; i < physicalMemory.size(); ++i) {
+                const Frame& f = physicalMemory[i];
+                cout << "Frame[" << i << "] ";
+                if (f.processName.empty()) {
+                    cout << "- FREE\n";
+                } else {
+                    cout << "- " << f.processName << " | Page " << f.pageNumber << " | Vars: ";
+                    for (const auto& [k, v] : f.data) {
+                        cout << k << "=" << v << " ";
+                    }
+                    cout << endl;
+                }
+            }
+            cout << "----------------------------\n";
+        }
+
+        else if (command == "backing-view") {
+            cout << "\n--- Backing Store View ---\n";
+            for (const auto& [procName, pageMap] : backingStore) {
+                cout << "Process " << procName << ":\n";
+                for (const auto& [pageNum, data] : pageMap) {
+                    cout << "  Page " << pageNum << ": ";
+                    for (const auto& [k, v] : data) {
+                        cout << k << "=" << v << " ";
+                    }
+                    cout << endl;
+                }
+            }
+            cout << "---------------------------\n";
+        }
+
+        else if (command.rfind("page-table ", 0) == 0) {
+            string processName = command.substr(11);
+            Process* proc = manager.retrieveProcess(processName);
+            if (proc) {
+                cout << "\n--- Page Table for " << processName << " ---\n";
+                for (const auto& entry : proc->pageTable) {
+                    cout << "Page " << entry.pageNumber
+                        << " | Valid: " << entry.valid
+                        << " | Frame: " << entry.frameNumber
+                        << " | Dirty: " << entry.dirty
+                        << " | Last Used: " << entry.lastUsed
+                        << endl;
+                }
+                cout << "-----------------------------\n";
+            } else {
+                cout << "Process not found.\n";
+            }
+        }
+
+        else if (command == "mem-summary") {
+            // CPU Utilization
+            unordered_set<int> coresUsedSet;
+            for (const auto& [name, proc] : manager.retrieveAllProcesses()) {
+                if (!proc->isFinished && proc->coreAssigned != -1) {
+                    coresUsedSet.insert(proc->coreAssigned);
+                }
+            }
+            int coresUsed = static_cast<int>(coresUsedSet.size());
+            int coresTotal = GLOBAL_CONFIG.numCPU;
+            double cpuUtil = (coresTotal > 0) ? (static_cast<double>(coresUsed) / coresTotal) * 100.0 : 0.0;
+
+            // Memory Utilization
+            uint64_t totalUsedMemory = 0;
+            vector<pair<string, uint64_t>> processMemoryUsage;
+
+            for (const auto& [name, proc] : manager.retrieveAllProcesses()) {
+                if (!proc->isFinished && proc->coreAssigned != -1) {
+                    processMemoryUsage.emplace_back(name, proc->totalmemory);
+                    totalUsedMemory += proc->totalmemory;
+                }
+            }
+
+            uint64_t totalAvailableMemory = GLOBAL_CONFIG.maxOverallMem;
+            double memoryUtil = (totalAvailableMemory > 0) ? (static_cast<double>(totalUsedMemory) / totalAvailableMemory) * 100.0 : 0.0;
+
+            // Print Summary
+            cout << "CPU-Util: " << fixed << setprecision(0) << cpuUtil << "%\n";
+            cout << "Memory Usage: " << totalUsedMemory / 1024 << "MiB / " << totalAvailableMemory / 1024 << "MiB\n";
+            cout << "Memory Util: " << fixed << setprecision(0) << memoryUtil << "%\n\n";
+
+            cout << "============================================\n";
+            cout << "Running processes \033[1mand\033[0m memory usage:\n\n";
+            for (const auto& [name, memUsed] : processMemoryUsage) {
+                cout << name << " " << memUsed / 1024 << "MiB\n";
+            }
+        }
+
         else if (command == "clear") {
             clearScreen();
             printHeader();

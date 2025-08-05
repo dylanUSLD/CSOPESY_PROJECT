@@ -229,6 +229,7 @@ struct Process {
     unordered_map<string, uint16_t> memory;
     uint64_t totalmemory;
     vector<PageTableEntry> pageTable;
+    bool isRunning = false;
 };
 
 class ProcessManager {
@@ -239,7 +240,7 @@ private:
     uint64_t generateProcessMemory() {
         random_device rd;
         mt19937 gen(rd());
-        uint64_t minRequired = max(GLOBAL_CONFIG.minMemPerProc, GLOBAL_CONFIG.memPerFrame * 2);
+        uint64_t minRequired = max(GLOBAL_CONFIG.minMemPerProc, GLOBAL_CONFIG.memPerFrame); // here is the change 2222
         uniform_int_distribution<uint64_t> distrib(minRequired, GLOBAL_CONFIG.maxMemPerProc);
 
         return distrib(gen);
@@ -292,7 +293,7 @@ public:
         // Track cores being used
         unordered_set<int> coresUsedSet;
         for (const auto& [name, proc] : processes) {
-            if (!proc->isFinished && proc->coreAssigned != -1) {
+            if (!proc->isFinished && proc->coreAssigned != -1 && proc->isRunning) {
                 coresUsedSet.insert(proc->coreAssigned);
             }
         }
@@ -384,10 +385,16 @@ public:
 
 unordered_map<string, uint16_t>& getPageData(Process& proc, uint64_t pageNum, ProcessManager& manager) {
 
-    if (pageNum >= proc.pageTable.size()) {
-    cerr << "Error: Invalid pageNum = " << pageNum << ", exceeds page table size.\n";
+    if (proc.pageTable.empty()) {
+    cerr << "Error: Page table is empty for process " << proc.name << endl;
     exit(1);
     }
+    if (pageNum >= proc.pageTable.size()) {
+        cerr << "Error: Invalid pageNum = " << pageNum
+            << ", exceeds page table size for process " << proc.name << endl;
+        exit(1);
+    }
+
 
     // Check if page is valid in memory
     if (proc.pageTable[pageNum].valid) {
@@ -427,6 +434,11 @@ unordered_map<string, uint16_t>& getPageData(Process& proc, uint64_t pageNum, Pr
                     }
                 }
             }
+        }
+
+        if (victimIdx == -1) {
+            cerr << "Error: No victim frame found for replacement. Physical memory full and no usable frame." << endl;
+            exit(1);
         }
 
 
@@ -470,6 +482,10 @@ void instructions_manager(Process* proc, int coreId, ProcessManager& manager) {
     string prefix = "(" + generateTimestamp() + ") Core: " + to_string(coreId) + " ";
 
     static thread_local mt19937 gen(random_device{}());
+
+    // Always ensure symbol table (page 0) is loaded for variable instructions
+    unordered_map<string, uint16_t>& symbolTable = getPageData(*proc, 0, manager);
+
     uniform_int_distribution<> cmdDistrib(0, 7); // Extended to 8 types of commands
     uniform_int_distribution<> valDistrib(1, 100);
 
@@ -477,7 +493,12 @@ void instructions_manager(Process* proc, int coreId, ProcessManager& manager) {
     uint64_t maxValidAddr = GLOBAL_CONFIG.memPerFrame * proc->pageTable.size() - 1;
 
     // Fix: Ensure lower does not exceed maxValidAddr
-    uint64_t upper = (maxValidAddr >= lower) ? maxValidAddr : lower;
+    if (maxValidAddr < lower) {
+    // Avoid invalid uniform_int_distribution
+    return; // Skip instruction generation
+    }
+    uint64_t upper = maxValidAddr;
+
 
     uniform_int_distribution<uint64_t> addrDistrib(lower, upper);
 
@@ -488,33 +509,35 @@ void instructions_manager(Process* proc, int coreId, ProcessManager& manager) {
     if (cmd == 1 || varNames.empty()) {
         string var = "v" + to_string(varNames.size());
         uint16_t val = valDistrib(gen);
-        proc->memory[var] = val;
+        symbolTable[var] = val;
         varNames.push_back(var);
         log << "DECLARE " << var << " = " << val;
     }
     else if (cmd == 0 && !varNames.empty()) {
         string var = varNames[gen() % varNames.size()];
-        uint16_t val = proc->memory.count(var) ? proc->memory[var] : 0;
+        uint16_t val = symbolTable.count(var) ? symbolTable[var] : 0;
         log << "PRINT " << var << " = " << val;
     }
     else if (cmd == 2 && varNames.size() >= 2) {
         string a = varNames[gen() % varNames.size()];
         string b = varNames[gen() % varNames.size()];
-        uint16_t valA = proc->memory.count(a) ? proc->memory[a] : 0;
-        uint16_t valB = proc->memory.count(b) ? proc->memory[b] : 0;
+        uint16_t valA = symbolTable.count(a) ? symbolTable[a] : 0;
+        uint16_t valB = symbolTable.count(b) ? symbolTable[b] : 0;
         uint16_t result = clampUint16(valA + valB);
         string resultVar = "res" + to_string(proc->currentLine);
-        proc->memory[resultVar] = result;
+        symbolTable[resultVar] = result;
+        varNames.push_back(resultVar);
         log << "ADD " << a << "(" << valA << ") + " << b << "(" << valB << ") = " << result;
     }
     else if (cmd == 3 && varNames.size() >= 2) {
         string a = varNames[gen() % varNames.size()];
         string b = varNames[gen() % varNames.size()];
-        uint16_t valA = proc->memory.count(a) ? proc->memory[a] : 0;
-        uint16_t valB = proc->memory.count(b) ? proc->memory[b] : 0;
+        uint16_t valA = symbolTable.count(a) ? symbolTable[a] : 0;
+        uint16_t valB = symbolTable.count(b) ? symbolTable[b] : 0;
         uint16_t result = clampUint16(valA - valB);
         string resultVar = "res" + to_string(proc->currentLine);
-        proc->memory[resultVar] = result;
+        symbolTable[resultVar] = result;
+        varNames.push_back(resultVar);
         log << "SUBTRACT " << a << "(" << valA << ") - " << b << "(" << valB << ") = " << result;
     }
     else if (cmd == 4) {
@@ -525,11 +548,11 @@ void instructions_manager(Process* proc, int coreId, ProcessManager& manager) {
     else if (cmd == 5 && !varNames.empty()) {
         string var = varNames[gen() % varNames.size()];
         int count = 3;
-        if (!proc->memory.count(var)) proc->memory[var] = 0;
+        if (!symbolTable.count(var)) symbolTable[var] = 0;
         log << "FOR loop on " << var << ": ";
         for (int i = 0; i < count; ++i) {
-            proc->memory[var]++;
-            log << "[" << i + 1 << "]=" << proc->memory[var] << " ";
+            symbolTable[var]++;
+            log << "[" << i + 1 << "]=" << symbolTable[var] << " ";
         }
     }
     else if (cmd == 6 && !varNames.empty()) {
@@ -542,8 +565,7 @@ void instructions_manager(Process* proc, int coreId, ProcessManager& manager) {
 
         unordered_map<string, uint16_t>& pageData = getPageData(*proc, pageNum, manager);
         uint16_t val = pageData.count(hexAddr) ? pageData[hexAddr] : 0;
-        proc->memory[var] = val;
-
+        symbolTable[var] = val;
         log << "READ " << var << " <- mem[" << hexAddr << "] = " << val;
     }
     else if (cmd == 7) {
@@ -638,6 +660,7 @@ void cpuWorker(int coreId, ProcessManager& manager) {
 
             if (proc) {
                 proc->coreAssigned = coreId;
+                proc->isRunning = true;
 
                 if (GLOBAL_CONFIG.scheduler == "fcfs") {
                     while (proc->currentLine < proc->totalLine && !stopScheduler) {
@@ -665,6 +688,7 @@ void cpuWorker(int coreId, ProcessManager& manager) {
                         continue;
                     }
                 }
+                proc->isRunning = false;
                 proc->isFinished = true;
                 proc->finishedTime = generateTimestamp();
             }
@@ -723,7 +747,7 @@ void scheduler_start(ProcessManager& manager) {
     while (!stopScheduler) {
         // Interruptible sleep/frequency
         for (size_t frequency = 0; frequency < GLOBAL_CONFIG.batchProcessFreq && !stopProcessCreation; ++frequency) {
-            this_thread::sleep_for(chrono::milliseconds(100));
+            this_thread::sleep_for(chrono::milliseconds(250));
         }
         if (stopProcessCreation) break;
 
@@ -755,243 +779,256 @@ void scheduler_start(ProcessManager& manager) {
 
 
 int main() {
-    ProcessManager manager;
-    thread scheduler_start_thread;
-    bool schedulerRunning = false;
+    try {
+        ProcessManager manager;
+        thread scheduler_start_thread;
+        bool schedulerRunning = false;
 
-    printHeader();
+        printHeader();
 
-    vector<thread> cpuThreads;
-    bool confirmInitialize = false;
-    string command;
+        vector<thread> cpuThreads;
+        bool confirmInitialize = false;
+        string command;
 
-    while (true) {
-        cout << "Enter a command: ";
-        getline(cin, command);
+        while (true) {
+            cout << "Enter a command: ";
+            getline(cin, command);
 
-        if (command == "initialize") {
-            if (loadSystemConfig()) {
-                cout << "\n System configuration loaded successfully:\n";
-                cout << "--------------------------------------------\n";
-                cout << "- num-cpu:            " << GLOBAL_CONFIG.numCPU << "\n";
-                cout << "- scheduler:          " << GLOBAL_CONFIG.scheduler << "\n";
-                cout << "- quantum-cycles:     " << GLOBAL_CONFIG.quantumCycles << "\n";
-                cout << "- batch-process-freq: " << GLOBAL_CONFIG.batchProcessFreq << "\n";
-                cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";
-                cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
-                cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << "\n";
-                cout << "- max-overall-mem:    " << GLOBAL_CONFIG.maxOverallMem << "\n";
-                cout << "- mem-per-frame:      " << GLOBAL_CONFIG.memPerFrame << "\n";
-                cout << "- min-mem-per-proc:   " << GLOBAL_CONFIG.minMemPerProc << "\n";
-                cout << "- max-mem-per-proc:   " << GLOBAL_CONFIG.maxMemPerProc << "\n";
-                cout << "--------------------------------------------\n";
+            if (command == "initialize") {
+                if (loadSystemConfig()) {
+                    cout << "\n System configuration loaded successfully:\n";
+                    cout << "--------------------------------------------\n";
+                    cout << "- num-cpu:            " << GLOBAL_CONFIG.numCPU << "\n";
+                    cout << "- scheduler:          " << GLOBAL_CONFIG.scheduler << "\n";
+                    cout << "- quantum-cycles:     " << GLOBAL_CONFIG.quantumCycles << "\n";
+                    cout << "- batch-process-freq: " << GLOBAL_CONFIG.batchProcessFreq << "\n";
+                    cout << "- min-ins:            " << GLOBAL_CONFIG.minInstructions << "\n";
+                    cout << "- max-ins:            " << GLOBAL_CONFIG.maxInstructions << "\n";
+                    cout << "- delay-per-exec:     " << GLOBAL_CONFIG.delayPerExec << "\n";
+                    cout << "- max-overall-mem:    " << GLOBAL_CONFIG.maxOverallMem << "\n";
+                    cout << "- mem-per-frame:      " << GLOBAL_CONFIG.memPerFrame << "\n";
+                    cout << "- min-mem-per-proc:   " << GLOBAL_CONFIG.minMemPerProc << "\n";
+                    cout << "- max-mem-per-proc:   " << GLOBAL_CONFIG.maxMemPerProc << "\n";
+                    cout << "--------------------------------------------\n";
 
-                // Stop old threads if already initialized
+                    // Stop old threads if already initialized
+                    if (confirmInitialize) {
+                        cout << "Reinitializing system...\n";
+                        stopScheduler = true;
+                        stopProcessCreation = true;
+                        cv.notify_all();
+                        for (auto& t : cpuThreads) {
+                            if (t.joinable()) t.join();
+                        }
+                        cpuThreads.clear();  // Important: clear thread list
+                        stopScheduler = false;
+                        stopProcessCreation = false;
+                    }
+
+                    // Start new CPU threads based on updated config
+                    for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
+                        cpuThreads.emplace_back(cpuWorker, i + 1, ref(manager));
+                    }
+
+                    confirmInitialize = true;
+                    cout << "System config loaded and CPU threads restarted.\n";
+
+                    physicalMemory.resize(GLOBAL_CONFIG.maxOverallMem / GLOBAL_CONFIG.memPerFrame);
+
+                    if (physicalMemory.empty()) {
+                        cerr << "Error: physicalMemory is empty after resize. Check mem-per-frame.\n";
+                        exit(1);
+                    }
+
+                }
+                else {
+                    cout << " Failed to load system configuration.\n";
+                }
+            }
+            else if (command.rfind("screen", 0) == 0) {
                 if (confirmInitialize) {
-                    cout << "Reinitializing system...\n";
-                    stopScheduler = true;
-                    stopProcessCreation = true;
-                    cv.notify_all();
-                    for (auto& t : cpuThreads) {
-                        if (t.joinable()) t.join();
-                    }
-                    cpuThreads.clear();  // Important: clear thread list
-                    stopScheduler = false;
+                    handleScreenCommand(command, manager);
+                }
+                else {
+                    cout << "Please initialize first.\n";
+                }
+            }
+            else if (command == "report-util") {
+                //Create csopesy-log.txt
+                //Save in the text file the same printed outputs listProcess function
+                if (!confirmInitialize) {
+                    cout << "Please initialize first.\n";
+                }
+                else {
+                    manager.logProcesses("csopesy-log.txt");
+                }
+            }
+            else if (command == "scheduler-start") {
+                if (!confirmInitialize) {
+                    cout << "Please initialize first.\n";
+                    continue;
+                }
+                if (!schedulerRunning) {
                     stopProcessCreation = false;
+                    schedulerRunning = true;
+                    scheduler_start_thread = thread(scheduler_start, ref(manager));
+                    cout << "Scheduler is running!\n";
                 }
-
-                // Start new CPU threads based on updated config
-                for (int i = 0; i < GLOBAL_CONFIG.numCPU; ++i) {
-                    cpuThreads.emplace_back(cpuWorker, i + 1, ref(manager));
+                else {
+                    cout << "Scheduler is already running!\n";
                 }
+            }
+            else if (command == "scheduler-stop") {
+                if (schedulerRunning) {
+                    cout << "Stopping scheduler...\n";
 
-                confirmInitialize = true;
-                cout << "System config loaded and CPU threads restarted.\n";
-
-                physicalMemory.resize(GLOBAL_CONFIG.maxOverallMem / GLOBAL_CONFIG.memPerFrame);
-
-                if (physicalMemory.empty()) {
-                    cerr << "Error: physicalMemory is empty after resize. Check mem-per-frame.\n";
-                    exit(1);
-                }
-
-            }
-            else {
-                cout << " Failed to load system configuration.\n";
-            }
-        }
-        else if (command.rfind("screen", 0) == 0) {
-            if (confirmInitialize) {
-                handleScreenCommand(command, manager);
-            }
-            else {
-                cout << "Please initialize first.\n";
-            }
-        }
-        else if (command == "report-util") {
-            //Create csopesy-log.txt
-            //Save in the text file the same printed outputs listProcess function
-            if (!confirmInitialize) {
-                cout << "Please initialize first.\n";
-            }
-            else {
-                manager.logProcesses("csopesy-log.txt");
-            }
-        }
-        else if (command == "scheduler-start") {
-            if (!confirmInitialize) {
-                cout << "Please initialize first.\n";
-                continue;
-            }
-            if (!schedulerRunning) {
-                stopProcessCreation = false;
-                schedulerRunning = true;
-                scheduler_start_thread = thread(scheduler_start, ref(manager));
-                cout << "Scheduler is running!\n";
-            }
-            else {
-                cout << "Scheduler is already running!\n";
-            }
-        }
-        else if (command == "scheduler-stop") {
-            if (schedulerRunning) {
-                cout << "Stopping scheduler...\n";
-
-                /*stopScheduler = true;
-                schedulerRunning = false;
-                cv.notify_all();
-                scheduler_start_thread.join();
-                stopScheduler = false;*/
-
-                stopProcessCreation = true;
-                schedulerRunning = false;
-                if (scheduler_start_thread.joinable()) {
+                    /*stopScheduler = true;
+                    schedulerRunning = false;
+                    cv.notify_all();
                     scheduler_start_thread.join();
+                    stopScheduler = false;*/
+
+                    stopProcessCreation = true;
+                    schedulerRunning = false;
+                    if (scheduler_start_thread.joinable()) {
+                        scheduler_start_thread.join();
+                    }
+                }
+                else {
+                    cout << "Scheduler is not running.\n";
                 }
             }
-            else {
-                cout << "Scheduler is not running.\n";
-            }
-        }
 
-        else if (command == "mem-view") {
-            cout << "\n--- Physical Memory View ---\n";
-            for (size_t i = 0; i < physicalMemory.size(); ++i) {
-                const Frame& f = physicalMemory[i];
-                cout << "Frame[" << i << "] ";
-                if (f.processName.empty()) {
-                    cout << "- FREE\n";
+            else if (command == "mem-view") {
+                cout << "\n--- Physical Memory View ---\n";
+                for (size_t i = 0; i < physicalMemory.size(); ++i) {
+                    const Frame& f = physicalMemory[i];
+                    cout << "Frame[" << i << "] ";
+                    if (f.processName.empty()) {
+                        cout << "- FREE\n";
+                    } else {
+                        cout << "- " << f.processName << " | Page " << f.pageNumber << " | Vars: ";
+                        for (const auto& [k, v] : f.data) {
+                            cout << k << "=" << v << " ";
+                        }
+                        cout << endl;
+                    }
+                }
+                cout << "----------------------------\n";
+            }
+
+            else if (command == "backing-view") {
+                cout << "\n--- Backing Store View ---\n";
+                for (const auto& [procName, pageMap] : backingStore) {
+                    cout << "Process " << procName << ":\n";
+                    for (const auto& [pageNum, data] : pageMap) {
+                        cout << "  Page " << pageNum << ": ";
+                        for (const auto& [k, v] : data) {
+                            cout << k << "=" << v << " ";
+                        }
+                        cout << endl;
+                    }
+                }
+                cout << "---------------------------\n";
+            }
+
+            else if (command.rfind("page-table ", 0) == 0) {
+                string processName = command.substr(11);
+                Process* proc = manager.retrieveProcess(processName);
+                if (proc) {
+                    cout << "\n--- Page Table for " << processName << " ---\n";
+                    for (const auto& entry : proc->pageTable) {
+                        cout << "Page " << entry.pageNumber
+                            << " | Valid: " << entry.valid
+                            << " | Frame: " << entry.frameNumber
+                            << " | Dirty: " << entry.dirty
+                            << " | Last Used: " << entry.lastUsed
+                            << endl;
+                    }
+                    cout << "-----------------------------\n";
                 } else {
-                    cout << "- " << f.processName << " | Page " << f.pageNumber << " | Vars: ";
-                    for (const auto& [k, v] : f.data) {
-                        cout << k << "=" << v << " ";
+                    cout << "Process not found.\n";
+                }
+            }
+
+            else if (command == "mem-summary") {
+                // CPU Utilization
+                unordered_set<int> coresUsedSet;
+                for (const auto& [name, proc] : manager.retrieveAllProcesses()) {
+                    if (!proc->isFinished && proc->coreAssigned != -1) {
+                        coresUsedSet.insert(proc->coreAssigned);
                     }
-                    cout << endl;
                 }
-            }
-            cout << "----------------------------\n";
-        }
+                int coresUsed = static_cast<int>(coresUsedSet.size());
+                int coresTotal = GLOBAL_CONFIG.numCPU;
+                double cpuUtil = (coresTotal > 0) ? (static_cast<double>(coresUsed) / coresTotal) * 100.0 : 0.0;
 
-        else if (command == "backing-view") {
-            cout << "\n--- Backing Store View ---\n";
-            for (const auto& [procName, pageMap] : backingStore) {
-                cout << "Process " << procName << ":\n";
-                for (const auto& [pageNum, data] : pageMap) {
-                    cout << "  Page " << pageNum << ": ";
-                    for (const auto& [k, v] : data) {
-                        cout << k << "=" << v << " ";
+                // Memory Utilization
+                uint64_t totalUsedMemory = 0;
+                vector<pair<string, uint64_t>> processMemoryUsage;
+
+                for (const auto& [name, proc] : manager.retrieveAllProcesses()) {
+                    if (!proc->isFinished && proc->coreAssigned != -1) {
+                        processMemoryUsage.emplace_back(name, proc->totalmemory);
+                        totalUsedMemory += proc->totalmemory;
                     }
-                    cout << endl;
                 }
-            }
-            cout << "---------------------------\n";
-        }
 
-        else if (command.rfind("page-table ", 0) == 0) {
-            string processName = command.substr(11);
-            Process* proc = manager.retrieveProcess(processName);
-            if (proc) {
-                cout << "\n--- Page Table for " << processName << " ---\n";
-                for (const auto& entry : proc->pageTable) {
-                    cout << "Page " << entry.pageNumber
-                        << " | Valid: " << entry.valid
-                        << " | Frame: " << entry.frameNumber
-                        << " | Dirty: " << entry.dirty
-                        << " | Last Used: " << entry.lastUsed
-                        << endl;
-                }
-                cout << "-----------------------------\n";
-            } else {
-                cout << "Process not found.\n";
-            }
-        }
+                uint64_t totalAvailableMemory = GLOBAL_CONFIG.maxOverallMem;
+                double memoryUtil = (totalAvailableMemory > 0) ? (static_cast<double>(totalUsedMemory) / totalAvailableMemory) * 100.0 : 0.0;
 
-        else if (command == "mem-summary") {
-            // CPU Utilization
-            unordered_set<int> coresUsedSet;
-            for (const auto& [name, proc] : manager.retrieveAllProcesses()) {
-                if (!proc->isFinished && proc->coreAssigned != -1) {
-                    coresUsedSet.insert(proc->coreAssigned);
-                }
-            }
-            int coresUsed = static_cast<int>(coresUsedSet.size());
-            int coresTotal = GLOBAL_CONFIG.numCPU;
-            double cpuUtil = (coresTotal > 0) ? (static_cast<double>(coresUsed) / coresTotal) * 100.0 : 0.0;
+                // Print Summary
+                cout << "CPU-Util: " << fixed << setprecision(0) << cpuUtil << "%\n";
+                cout << "Memory Usage: " << totalUsedMemory / 1024 << "MiB / " << totalAvailableMemory / 1024 << "MiB\n";
+                cout << "Memory Util: " << fixed << setprecision(0) << memoryUtil << "%\n\n";
 
-            // Memory Utilization
-            uint64_t totalUsedMemory = 0;
-            vector<pair<string, uint64_t>> processMemoryUsage;
-
-            for (const auto& [name, proc] : manager.retrieveAllProcesses()) {
-                if (!proc->isFinished && proc->coreAssigned != -1) {
-                    processMemoryUsage.emplace_back(name, proc->totalmemory);
-                    totalUsedMemory += proc->totalmemory;
+                cout << "============================================\n";
+                cout << "Running processes \033[1mand\033[0m memory usage:\n\n";
+                for (const auto& [name, memUsed] : processMemoryUsage) {
+                    cout << name << " " << memUsed / 1024 << "MiB\n";
                 }
             }
 
-            uint64_t totalAvailableMemory = GLOBAL_CONFIG.maxOverallMem;
-            double memoryUtil = (totalAvailableMemory > 0) ? (static_cast<double>(totalUsedMemory) / totalAvailableMemory) * 100.0 : 0.0;
-
-            // Print Summary
-            cout << "CPU-Util: " << fixed << setprecision(0) << cpuUtil << "%\n";
-            cout << "Memory Usage: " << totalUsedMemory / 1024 << "MiB / " << totalAvailableMemory / 1024 << "MiB\n";
-            cout << "Memory Util: " << fixed << setprecision(0) << memoryUtil << "%\n\n";
-
-            cout << "============================================\n";
-            cout << "Running processes \033[1mand\033[0m memory usage:\n\n";
-            for (const auto& [name, memUsed] : processMemoryUsage) {
-                cout << name << " " << memUsed / 1024 << "MiB\n";
+            else if (command == "clear") {
+                clearScreen();
+                printHeader();
             }
-        }
+            else if (command == "exit") {
 
-        else if (command == "clear") {
-            clearScreen();
-            printHeader();
-        }
-        else if (command == "exit") {
+                if (schedulerRunning) {
+                    cout << "Stopping scheduler...\n";
 
-            if (schedulerRunning) {
-                cout << "Stopping scheduler...\n";
-
-                stopProcessCreation = true;
-                schedulerRunning = false;
-                if (scheduler_start_thread.joinable()) {
-                    scheduler_start_thread.join();
+                    stopProcessCreation = true;
+                    schedulerRunning = false;
+                    if (scheduler_start_thread.joinable()) {
+                        scheduler_start_thread.join();
+                    }
                 }
-            }
 
-            cout << "Exiting CSOPESY command line.\n";
-            break;
+                cout << "Exiting CSOPESY command line.\n";
+                break;
+            }
+            else {
+                cout << "Unknown command.\n";
+            }
         }
-        else {
-            cout << "Unknown command.\n";
-        }
+
+        stopScheduler = true;
+        stopProcessCreation = true;
+        cv.notify_all();
+        for (auto& t : cpuThreads) t.join();
+
+        return 0;
+    } catch (const std::bad_alloc& e) {
+        cerr << "Memory allocation failed: " << e.what() << endl;
+        return 1;
     }
-
-    stopScheduler = true;
-    stopProcessCreation = true;
-    cv.notify_all();
-    for (auto& t : cpuThreads) t.join();
-
-    return 0;
+    catch (const exception& e) {
+        cerr << "Unhandled exception: " << e.what() << endl;
+        return 1;
+    }
+    catch (...) {
+        cerr << "Unknown fatal error occurred." << endl;
+        return 1;
+    }
 }
